@@ -17,7 +17,9 @@ const urls = [
 ]
 
 const summary = { attempted: urls.length, live: [], unavailable: [], rejected: [], duplicate: [] }
+const detectRetailer = (url) => new URL(url).hostname.replace(/^www\./, '').split('.')[0]
 for (const url of urls) {
+  const detectedRetailer = detectRetailer(url)
   try {
     const response = await fetch(`${apiBase}/api/products`, {
       method: 'POST',
@@ -26,8 +28,8 @@ for (const url of urls) {
     })
     const body = await response.json()
     const listing = body.listing
-    const retailer = listing?.retailerName || listing?.retailer || 'unknown'
-    const result = { url, retailer, dataMode: listing?.dataMode || 'rejected', reason: body.error || listing?.lastError || null }
+    const retailer = listing?.retailerName || listing?.retailer || detectedRetailer
+    const result = { url, retailer, dataMode: listing?.dataMode || (response.status === 409 ? 'duplicate' : 'rejected'), reason: body.error || listing?.lastError || null }
     if (response.status === 409) summary.duplicate.push(result)
     else if (!response.ok) summary.rejected.push(result)
     else if (listing?.dataMode === 'live') summary.live.push(result)
