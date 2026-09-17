@@ -49,7 +49,7 @@ DELETE /api/alerts/:id
 
 ## Manual verification
 
-1. Confirm the dashboard shows **DEMO DATA**, a sync time, calculated average/min/max/volatility, and a five-minute refresh label.
+1. Confirm the dashboard shows V1 live scope status, a sync time, calculated average/min/max/volatility, and a 30-minute refresh label.
 2. Select every color and each history range; verify the chart and table update.
 3. Change sorting and platform/color/min/max filters; verify the highlighted first row is the filtered cheapest offer.
 4. Open retailer links and verify they open a new tab.
@@ -74,5 +74,27 @@ APIFY_VIJAY_SALES_ACTOR_ID=
 Add a listing by pasting its URL in the dashboard or by sending `{ "url": "https://...", "targetPrice": 25000 }` to `POST /api/products`. The API detects the retailer from the hostname, extracts Amazon ASINs, rejects unsupported domains, deduplicates exact URLs, and fetches immediately. A successful response is stored with `dataMode: live`, `verified: true`, source URL, and timestamp. A failure becomes `dataMode: unavailable`; its last-known price is never treated as current and no fake history row is written.
 
 Run `npm run seed:listings` once after the base product has been persisted to seed the known Amazon ASIN listing. All future listings are added through the UI/API. No product URLs or ASINs are stored in `.env`.
+
+## V1 scope
+
+V1 actively fetches Amazon listings through Keepa. Refreshes run every 30 minutes, controlled by `V1_REFRESH_MINUTES` in the server code and the `V1_ACTIVE_RETAILERS` setting (default: `amazon,flipkart`). Amazon is live only when `KEEPA_API_KEY` is configured and the saved listing is successfully fetched.
+
+Flipkart is intentionally gated. The app does not call an Affiliate API or scraper for a listing until that listing has `apiVerified: true`. After obtaining credentials, run:
+
+```powershell
+$env:FLIPKART_AFFILIATE_ID="..."
+$env:FLIPKART_AFFILIATE_TOKEN="..."
+npm.cmd run test:flipkart-compat
+```
+
+Review every listing's MATCH/MISMATCH/NO_RESULT result. The script compares returned identity and canonical URL; a 200 response alone is not enough. Only for exact MATCH URLs, run:
+
+```powershell
+npm.cmd run mark:flipkart-verified -- "https://www.flipkart.com/exact-matched-url"
+```
+
+The scheduler will then pick up those listings. The existing Apify path remains available as a future fallback but is not used for Flipkart V1.
+
+Croma, Reliance Digital, Vijay Sales, and Sennheiser Official remain stored listings but are explicitly out of scope. They show `Coming soon`, are skipped by the scheduler, and retain the reason `retailer not yet supported in v1`.
 
 For static hosts such as Vercel, deploy the frontend as a static Vite build and configure `VITE_API_URL` to point to a separately deployed API. The included `vercel.json` only handles SPA fallback routing; it does not attempt to proxy API calls to `localhost`.

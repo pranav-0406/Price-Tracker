@@ -13,6 +13,9 @@ mongoose.set('bufferCommands', false)
 
 const app = express()
 const port = Number(process.env.PORT || 3001)
+const V1_REFRESH_MINUTES = 30
+const V1_ACTIVE_RETAILERS = (process.env.V1_ACTIVE_RETAILERS || 'amazon,flipkart').split(',').map((value) => value.trim()).filter(Boolean)
+const V1_OUT_OF_SCOPE_RETAILERS = ['croma', 'reliance_digital', 'vijay_sales', 'sennheiser_official']
 const isProduction = process.env.NODE_ENV === 'production'
 const allowedOrigins = (process.env.FRONTEND_URL || '').split(',').map((origin) => origin.trim()).filter(Boolean)
 app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }))
@@ -84,21 +87,11 @@ const extractAsin = (value) => {
   return match[1].toUpperCase()
 }
 const listingView = (listing) => ({ ...listing, retailerName: retailerByKey(listing.retailer)?.name || listing.retailer })
-const createSnapshot = (productId) => {
-  const product = getProduct(productId)
-  return product.colors.flatMap((color, colorIndex) => retailerConfig.map((retailer, index) => {
-    const oldPrice = Math.max(11700, color.price + (index + 1) * 210 + colorIndex * 100)
-    const price = Math.max(11700, oldPrice + ((Date.now() / 300000 + index + colorIndex) % 2 > 1 ? -350 : 180))
-    return {
-      platform: retailer.name, short: retailer.short, colorHex: retailer.colorHex, color: color.name, colorValue: color.value,
-      price: Math.round(price), previous: Math.round(oldPrice), change: Number((((price - oldPrice) / oldPrice) * 100).toFixed(1)),
-      stock: index % 3 === 1 ? 'Only 2 left' : 'In stock', delivery: index % 2 ? '₹99 delivery' : 'Free delivery',
-      url: `${retailer.url}search?q=${encodeURIComponent(product.name)}`, cardOffer: index % 2 === 0,
-      verified: false, dataMode: 'demo', lastUpdated: new Date().toISOString(),
-    }
-  }))
+const listingReason = (listing) => {
+  if (V1_OUT_OF_SCOPE_RETAILERS.includes(listing.retailer)) return 'retailer not yet supported in v1'
+  if (listing.retailer === 'flipkart' && !listing.apiVerified) return 'pending Flipkart API compatibility verification'
+  return listing.lastError || null
 }
-const liveModeConfigured = () => Boolean(process.env.KEEPA_API_KEY || process.env.APIFY_API_TOKEN)
 const asNumber = (value) => {
   const number = Number(String(value ?? '').replace(/[^\d.]/g, ''))
   return Number.isFinite(number) && number > 0 ? Math.round(number) : null
@@ -120,6 +113,8 @@ const normalizedLiveEntry = (retailer, raw, product) => {
 const fetchListing = async (listing, product) => {
   const retailer = retailerByKey(listing.retailer)
   if (!retailer) throw new Error(`No provider for retailer ${listing.retailer}`)
+  if (!V1_ACTIVE_RETAILERS.includes(listing.retailer)) throw new Error('retailer not yet supported in v1')
+  if (listing.retailer === 'flipkart' && !listing.apiVerified) throw new Error('pending Flipkart API compatibility verification')
   if (listing.retailer === 'amazon') {
     if (!process.env.KEEPA_API_KEY) throw new Error('KEEPA_API_KEY is not configured')
     const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(listing.asin)}&stats=1`)
@@ -130,6 +125,7 @@ const fetchListing = async (listing, product) => {
     if (!result) throw new Error('Keepa returned no current price')
     return result
   }
+  if (listing.retailer === 'flipkart') return fetchFlipkartAffiliatePrice(listing, product, retailer)
   if (listing.retailer === 'sennheiser_official') {
     const actorId = process.env.APIFY_SENNHEISER_OFFICIAL_ACTOR_ID
     if (!process.env.APIFY_API_TOKEN || !actorId) throw new Error('no provider configured for sennheiser_official')
@@ -138,6 +134,7 @@ const fetchListing = async (listing, product) => {
     if (!result) throw new Error('Sennheiser actor returned no usable price')
     return result
   }
+  // Future fallback only: Apify scraping is intentionally not used for V1 Flipkart.
   const actorId = process.env[`APIFY_${listing.retailer.toUpperCase()}_ACTOR_ID`]
   if (!process.env.APIFY_API_TOKEN || !actorId) throw new Error(`Apify actor is not configured for ${listing.retailer}`)
   const items = await apifyRun(actorId, { urls: [listing.url], productUrl: listing.url })
@@ -154,6 +151,7 @@ const updateListing = async (listing, result, error) => {
     listing.lastSuccessAt = listing.lastCheckedAt
     listing.dataMode = 'live'
     listing.verified = true
+    listing.lastError = null
     listing.consecutiveFailures = 0
     if (mongoReady && listing._id) await ListingModel.findByIdAndUpdate(listing._id, listing)
     if (mongoReady && listing._id) await PriceHistoryModel.create({ listingId: listing._id, productId: listing.productId, retailer: listing.retailer, variant: listing.variant, price: result.price, stock: result.stock, url: listing.url, fetchedAt: listing.lastSuccessAt, verified: true })
@@ -167,8 +165,25 @@ const updateListing = async (listing, result, error) => {
   console.error(`Listing refresh failed (${listing.url}): ${error.message}`)
   return null
 }
+const markOutOfScopeListings = () => {
+  for (const listing of listings.filter((item) => V1_OUT_OF_SCOPE_RETAILERS.includes(item.retailer))) {
+    listing.dataMode = 'unavailable'
+    listing.verified = false
+    listing.lastError = 'retailer not yet supported in v1'
+  }
+}
 const refreshListings = async () => {
-  const active = listings.filter((listing) => listing.active)
+  markOutOfScopeListings()
+  const active = listings.filter((listing) => listing.active && V1_ACTIVE_RETAILERS.includes(listing.retailer) && (listing.retailer !== 'flipkart' || listing.apiVerified))
+  const skippedCount = listings.filter((listing) => listing.active && !V1_ACTIVE_RETAILERS.includes(listing.retailer)).length
+  if (skippedCount) console.log(`skipped (v1 scope): ${V1_OUT_OF_SCOPE_RETAILERS.join(', ')} — ${skippedCount} listings`)
+  const pendingFlipkart = listings.filter((listing) => listing.active && listing.retailer === 'flipkart' && !listing.apiVerified)
+  for (const listing of pendingFlipkart) {
+    listing.dataMode = 'unavailable'
+    listing.verified = false
+    listing.lastError = 'pending Flipkart API compatibility verification'
+  }
+  if (pendingFlipkart.length) console.log(`skipped (v1 scope): flipkart pending API compatibility verification — ${pendingFlipkart.length} listings`)
   const previous = new Map(priceSnapshots)
   const grouped = new Map()
   for (const listing of active) {
@@ -187,7 +202,7 @@ const refreshListings = async () => {
   for (const product of catalog) {
     const next = grouped.get(product.id) || []
     priceSnapshots.set(product.id, next)
-    product.dataMode = active.some((item) => item.productId === product.id && item.dataMode === 'live') ? 'live' : (active.some((item) => item.productId === product.id) ? 'unavailable' : (liveModeConfigured() ? 'live' : 'demo'))
+    product.dataMode = active.some((item) => item.productId === product.id && item.dataMode === 'live') ? 'live' : (listings.some((item) => item.productId === product.id && item.active) ? 'unavailable' : 'demo')
     if (next.length) await persistPrices(product.id, next)
     await evaluateAlerts(product, previous.get(product.id) || [])
   }
@@ -201,52 +216,40 @@ const apifyRun = async (actorId, input) => {
   const data = await response.json()
   return Array.isArray(data) ? data : [data]
 }
-const fetchLivePrices = async (product) => {
-  const entries = []
-  const errors = []
-  if (process.env.KEEPA_API_KEY && process.env.AMAZON_ASIN) {
-    try {
-      const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(process.env.AMAZON_ASIN)}&stats=1`)
-      if (!response.ok) throw new Error(`Keepa returned HTTP ${response.status}`)
-      const payload = await response.json()
-      const item = payload.products?.[0]
-      const price = item?.stats?.current?.[0]
-      const result = normalizedLiveEntry(retailerConfig[0], { price: price > 0 ? price / 100 : null, url: process.env.AMAZON_LISTING_URL, color: item?.color, source: 'Keepa' }, product)
-      if (result) entries.push(result); else throw new Error('Keepa returned no current price')
-    } catch (error) { errors.push(`Amazon: ${error.message}`) }
+const findNestedValue = (value, keys) => {
+  if (!value || typeof value !== 'object') return null
+  for (const key of keys) if (value[key] !== undefined && value[key] !== null) return value[key]
+  for (const child of Object.values(value)) {
+    const result = findNestedValue(child, keys)
+    if (result !== null) return result
   }
-  for (const retailer of retailerConfig.slice(1)) {
-    const actorId = process.env[`APIFY_${retailer.name.toUpperCase().replace(/[^A-Z]+/g, '_')}_ACTOR_ID`]
-    const listingUrl = process.env[retailer.env]
-    if (!process.env.APIFY_API_TOKEN || !actorId || !listingUrl) continue
-    try {
-      const items = await apifyRun(actorId, { urls: [listingUrl], productUrl: listingUrl })
-      for (const item of items) {
-        const result = normalizedLiveEntry(retailer, { ...item, url: item.url || listingUrl }, product)
-        if (result) entries.push(result)
-      }
-      if (!items.length) throw new Error('Actor returned no items')
-    } catch (error) { errors.push(`${retailer.name}: ${error.message}`) }
-  }
-  if (errors.length) console.error(`Live price provider errors: ${errors.join('; ')}`)
-  return entries
+  return null
+}
+const fetchFlipkartAffiliatePrice = async (listing, product, retailer) => {
+  if (!process.env.FLIPKART_AFFILIATE_ID || !process.env.FLIPKART_AFFILIATE_TOKEN) throw new Error('Flipkart Affiliate credentials are not configured')
+  const identifier = new URL(listing.url).pathname.match(/\/p\/(itm[a-z0-9]+)/i)?.[1]
+  if (!identifier) throw new Error('Flipkart listing has no itm identifier')
+  const response = await fetch(`https://affiliate-api.flipkart.net/affiliate/product/json?id=${encodeURIComponent(identifier)}`, {
+    headers: { 'Fk-Affiliate-Id': process.env.FLIPKART_AFFILIATE_ID, 'Fk-Affiliate-Token': process.env.FLIPKART_AFFILIATE_TOKEN, accept: 'application/json' },
+  })
+  if (!response.ok) throw new Error(`Flipkart Affiliate API returned HTTP ${response.status}`)
+  const payload = await response.json()
+  const price = findNestedValue(payload, ['sellingPrice', 'selling_price', 'price'])
+  const result = normalizedLiveEntry(retailer, {
+    price, url: listing.url, stock: findNestedValue(payload, ['inStock', 'in_stock', 'availability', 'stock']),
+    color: findNestedValue(payload, ['color', 'colour', 'variant']), source: 'Flipkart Affiliate API',
+  }, product)
+  if (!result) throw new Error('Flipkart Affiliate API returned no usable price')
+  return result
 }
 const refreshSnapshots = async () => {
-  if (listings.length || liveModeConfigured()) return refreshListings()
-  const previous = new Map(priceSnapshots)
+  if (listings.length) return refreshListings()
   lastSyncAt = new Date().toISOString()
   for (const product of catalog) {
-    const livePrices = liveModeConfigured() ? await fetchLivePrices(product) : []
-    const next = liveModeConfigured() ? livePrices : createSnapshot(product.id)
-    product.dataMode = livePrices.length ? 'live' : (liveModeConfigured() ? 'live' : 'demo')
-    liveProviderStatus = liveModeConfigured() ? (livePrices.length ? 'connected' : 'error') : 'not_configured'
-    priceSnapshots.set(product.id, next)
-    const existing = historyStore.get(product.id) || []
-    historyStore.set(product.id, [...existing, ...next.map((entry) => ({ ...entry, date: lastSyncAt }))].slice(-2160))
-    await persistProduct(product)
-    await persistPrices(product.id, next)
-    await evaluateAlerts(product, previous.get(product.id) || [])
+    product.dataMode = 'unavailable'
+    priceSnapshots.set(product.id, [])
   }
+  liveProviderStatus = 'not_configured'
 }
 const buildHistory = (productId, colorValue, days) => {
   const product = getProduct(productId)
@@ -321,8 +324,11 @@ async function evaluateAlerts(product, previous) {
   }
 }
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveProviderStatus === 'connected' ? 'live' : (listings.length || liveModeConfigured() ? 'live_unavailable' : 'demo'), providers: liveProviderStatus }))
-app.get('/api/products', (_req, res) => res.json({ products: catalog.map((product) => ({ ...product, listings: listings.filter((listing) => listing.productId === product.id).map(listingView) })) }))
+app.get('/api/health', (_req, res) => {
+  const liveRetailers = [...new Set([...priceSnapshots.values()].flat().map((item) => item.platform))]
+  res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveRetailers.length ? 'live' : 'live_unavailable', providers: liveProviderStatus, v1: { activeRetailers: V1_ACTIVE_RETAILERS, outOfScopeRetailers: V1_OUT_OF_SCOPE_RETAILERS, refreshMinutes: V1_REFRESH_MINUTES, liveRetailers } })
+})
+app.get('/api/products', (_req, res) => res.json({ products: catalog.map((product) => ({ ...product, listings: listings.filter((listing) => listing.productId === product.id).map((listing) => ({ ...listingView(listing), statusReason: listingReason(listing) })) })) }))
 app.post('/api/products', async (req, res) => {
   const { url = req.body?.sourceUrl, targetPrice } = req.body || {}
   if (!url?.trim()) return res.status(400).json({ error: 'Product URL is required' })
@@ -335,7 +341,7 @@ app.post('/api/products', async (req, res) => {
   if (listings.some((listing) => listing.url === url)) return res.status(409).json({ error: 'This URL is already being tracked' })
   if (mongoReady && await ListingModel.exists({ url })) return res.status(409).json({ error: 'This URL is already being tracked' })
   const product = getProduct(req.body.productId)
-  const listing = { id: crypto.randomUUID(), productId: product.id, retailer, url, variant: 'unknown', asin, active: true, dataMode: 'unavailable', verified: false, consecutiveFailures: 0, targetPrice }
+  const listing = { id: crypto.randomUUID(), productId: product.id, retailer, url, variant: 'unknown', asin, active: true, dataMode: 'unavailable', verified: false, apiVerified: false, consecutiveFailures: 0, lastError: listingReason({ retailer, apiVerified: false }), targetPrice }
   listings.push(listing)
   await persistListing(listing)
   await refreshListings()
@@ -364,8 +370,15 @@ app.delete('/api/products/:id', async (req, res) => {
 app.get('/api/product/specs', (req, res) => res.json(getProduct(req.query.productId)))
 app.get('/api/prices', (req, res) => {
   const product = getProduct(req.query.productId)
-  const prices = priceSnapshots.get(product.id) || []
-  const values = prices.map((entry) => entry.price)
+  const current = priceSnapshots.get(product.id) || []
+  const trackedListings = listings.filter((listing) => listing.productId === product.id && listing.active)
+  const prices = trackedListings.map((listing) => {
+    const existing = current.find((entry) => entry.listingId === (listing.id || listing._id?.toString()))
+    if (existing) return existing
+    const retailer = retailerByKey(listing.retailer)
+    return { platform: retailer?.name || listing.retailer, short: retailer?.short || '?', colorHex: retailer?.colorHex, color: listing.variant === 'unknown' ? 'Black' : listing.variant, colorValue: listing.variant === 'unknown' ? 'black' : listing.variant, price: null, previous: null, change: 0, stock: listing.dataMode === 'unavailable' ? 'Not tracked' : 'Unknown', delivery: '—', url: listing.url, verified: false, dataMode: listing.dataMode, statusReason: listingReason(listing), listingId: listing.id || listing._id?.toString(), listingUrl: listing.url }
+  })
+  const values = prices.map((entry) => entry.price).filter((value) => Number.isFinite(value))
   const average = values.reduce((sum, value) => sum + value, 0) / (values.length || 1)
   const variance = values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length || 1)
   res.json({ updatedAt: lastSyncAt, dataMode: product.dataMode, prices, stats: { average: values.length ? Math.round(average) : null, lowest: values.length ? Math.min(...values) : null, highest: values.length ? Math.max(...values) : null, volatility: values.length ? Math.sqrt(variance) : null } })
@@ -419,7 +432,7 @@ app.post('/api/test-sms', async (req, res) => {
   return res.status(result.status === 'sent' ? 200 : 502).json(result)
 })
 
-cron.schedule('*/5 * * * *', () => refreshSnapshots().catch((error) => console.error('Price refresh failed:', error)))
+cron.schedule(`*/${V1_REFRESH_MINUTES} * * * *`, () => refreshSnapshots().catch((error) => console.error('Price refresh failed:', error)))
 const persistProduct = async (product) => {
   if (!mongoReady) return
   try {
@@ -461,6 +474,7 @@ if (process.env.MONGODB_URI && process.env.DISABLE_MONGO !== 'true') {
       await Promise.all(catalog.map((product) => persistProduct(product)))
       const storedListings = await ListingModel.find({ active: true }).lean()
       listings.push(...storedListings.map((listing) => ({ ...listing, id: listing._id.toString() })))
+      markOutOfScopeListings()
       if (listings.length) await refreshListings()
       await Promise.all([...priceSnapshots.entries()].map(([productId, prices]) => persistPrices(productId, prices)))
       await Promise.all(alerts.map((alert) => persistAlert(alert)))

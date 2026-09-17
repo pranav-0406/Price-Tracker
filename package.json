@@ -10,7 +10,9 @@
     "server": "node server/index.js",
     "start": "node server/index.js",
     "seed:listings": "node server/seed-listings.js",
-    "bulk:add-listings": "node server/bulk-add-listings.js"
+    "bulk:add-listings": "node server/bulk-add-listings.js",
+    "test:flipkart-compat": "node server/flipkart-compat-test.js",
+    "mark:flipkart-verified": "node server/mark-flipkart-verified.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",

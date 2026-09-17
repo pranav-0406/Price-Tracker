@@ -19,7 +19,7 @@ export const ProductModel = mongoose.models.Product || mongoose.model('Product',
   description: String,
   specs: mongoose.Schema.Types.Mixed,
   colors: [colorSchema],
-  dataMode: { type: String, enum: ['demo', 'live'], default: 'demo' },
+  dataMode: { type: String, enum: ['demo', 'live', 'unavailable'], default: 'demo' },
 }, { timestamps: true }))
 
 export const PriceModel = mongoose.models.Price || mongoose.model('Price', new mongoose.Schema({
@@ -52,6 +52,7 @@ export const ListingModel = mongoose.models.Listing || mongoose.model('Listing',
   lastSuccessAt: Date,
   dataMode: { type: String, enum: ['live', 'unavailable'], default: 'unavailable' },
   verified: { type: Boolean, default: false },
+  apiVerified: { type: Boolean, default: false },
   consecutiveFailures: { type: Number, default: 0 },
   lastError: String,
 }, { timestamps: true }))
