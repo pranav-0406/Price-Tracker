@@ -220,31 +220,6 @@ app.post('/api/test-sms', async (req, res) => {
 })
 
 cron.schedule('*/5 * * * *', () => refreshSnapshots().catch((error) => console.error('Price refresh failed:', error)))
-await refreshSnapshots()
-if (process.env.MONGODB_URI) {
-  const connectMongo = async () => {
-    try {
-      await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
-      mongoStatus = 'connected'
-      mongoReady = true
-      await Promise.all(catalog.map((product) => persistProduct(product)))
-      await Promise.all([...priceSnapshots.entries()].map(([productId, prices]) => persistPrices(productId, prices)))
-      await Promise.all(alerts.map((alert) => persistAlert(alert)))
-    } catch (error) {
-      mongoStatus = 'unavailable'
-      mongoReady = false
-      console.error('MongoDB connection failed:', error.message)
-      setTimeout(connectMongo, 10000)
-    }
-  }
-  mongoose.connection.on('disconnected', () => {
-    mongoStatus = 'disconnected'
-    mongoReady = false
-    setTimeout(connectMongo, 10000)
-  })
-  connectMongo()
-}
-
 const persistProduct = async (product) => {
   if (!mongoReady) return
   try {
@@ -271,6 +246,32 @@ const persistAlert = async (alert) => {
   }
 }
 const productToDocument = (product) => ({ productId: product.id, name: product.name, brand: product.brand, category: product.category, sku: product.sku, sourceUrl: product.sourceUrl, description: product.description, specs: product.specs, colors: product.colors, dataMode: product.dataMode })
+
+if (process.env.MONGODB_URI) {
+  const connectMongo = async () => {
+    try {
+      await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
+      mongoStatus = 'connected'
+      mongoReady = true
+      await Promise.all(catalog.map((product) => persistProduct(product)))
+      await Promise.all([...priceSnapshots.entries()].map(([productId, prices]) => persistPrices(productId, prices)))
+      await Promise.all(alerts.map((alert) => persistAlert(alert)))
+    } catch (error) {
+      mongoStatus = 'unavailable'
+      mongoReady = false
+      console.error('MongoDB connection failed:', error.message)
+      setTimeout(connectMongo, 10000)
+    }
+  }
+  mongoose.connection.on('disconnected', () => {
+    mongoStatus = 'disconnected'
+    mongoReady = false
+    setTimeout(connectMongo, 10000)
+  })
+  connectMongo()
+}
+
+await refreshSnapshots()
 app.use(express.static('dist'))
 app.get('*', (req, res, next) => req.path.startsWith('/api/') ? next() : res.sendFile('index.html', { root: 'dist' }))
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
