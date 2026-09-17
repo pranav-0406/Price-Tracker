@@ -1,4 +1,4 @@
-# Sennheiser Momentum 4 Price Tracker
+# Price Tracker
 
 React/Vite frontend and Node/Express API for comparing product prices across Indian retailers. The current build is explicitly marked **Demo Data** because retailer scrapers are not connected; it does not claim that generated prices or history are verified.
 
