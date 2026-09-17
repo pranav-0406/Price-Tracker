@@ -6,7 +6,7 @@ import mongoose from 'mongoose'
 import rateLimit from 'express-rate-limit'
 import twilio from 'twilio'
 import crypto from 'node:crypto'
-import { AlertModel, PriceModel, ProductModel } from './models.js'
+import { AlertModel, ListingModel, PriceHistoryModel, PriceModel, ProductModel } from './models.js'
 
 dotenv.config()
 
@@ -19,11 +19,11 @@ app.use(express.json({ limit: '20kb' }))
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: 'draft-7', legacyHeaders: false }))
 
 const retailerConfig = [
-  { name: 'Amazon', short: 'a', colorHex: '#f59e0b', env: 'AMAZON_LISTING_URL' },
-  { name: 'Flipkart', short: 'f', colorHex: '#2874f0', env: 'FLIPKART_LISTING_URL' },
-  { name: 'Croma', short: 'c', colorHex: '#18a558', env: 'CROMA_LISTING_URL' },
-  { name: 'Reliance Digital', short: 'r', colorHex: '#147dff', env: 'RELIANCE_DIGITAL_LISTING_URL' },
-  { name: 'Vijay Sales', short: 'v', colorHex: '#e84646', env: 'VIJAY_SALES_LISTING_URL' },
+  { key: 'amazon', name: 'Amazon', short: 'a', colorHex: '#f59e0b' },
+  { key: 'flipkart', name: 'Flipkart', short: 'f', colorHex: '#2874f0' },
+  { key: 'croma', name: 'Croma', short: 'c', colorHex: '#18a558' },
+  { key: 'reliance_digital', name: 'Reliance Digital', short: 'r', colorHex: '#147dff' },
+  { key: 'vijay_sales', name: 'Vijay Sales', short: 'v', colorHex: '#e84646' },
 ]
 const colors = [
   { name: 'Black', value: 'black', colorHex: '#252525' },
@@ -56,6 +56,7 @@ const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourc
 
 const catalog = [generateProduct('Sennheiser Momentum 4 Wireless', 'Sennheiser')]
 catalog[0].id = 'sennheiser-momentum-4-wireless'
+const listings = []
 const priceSnapshots = new Map()
 const historyStore = new Map()
 const alerts = []
@@ -65,6 +66,24 @@ let mongoReady = false
 let liveProviderStatus = 'not_configured'
 
 const getProduct = (productId) => catalog.find((item) => item.id === productId) || catalog[0]
+const retailerByKey = (key) => retailerConfig.find((item) => item.key === key)
+const detectRetailer = (value) => {
+  let hostname
+  try { hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, '') } catch { throw new Error('A valid product URL is required') }
+  const match = retailerConfig.find((retailer) => hostname === retailer.key.replace('_', '') || (
+    retailer.key === 'amazon' && hostname === 'amazon.in') || (retailer.key === 'flipkart' && hostname === 'flipkart.com') ||
+    (retailer.key === 'croma' && hostname === 'croma.com') || (retailer.key === 'reliance_digital' && hostname === 'reliancedigital.in') ||
+    (retailer.key === 'vijay_sales' && hostname === 'vijaysales.com'))
+  if (!match) throw new Error(`Unsupported retailer domain: ${hostname}`)
+  return match.key
+}
+const extractAsin = (value) => {
+  const url = new URL(value)
+  const match = url.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?]|$)/i) || url.search.match(/[?&]asin=([A-Z0-9]{10})(?:&|$)/i)
+  if (!match) throw new Error('Amazon URL must contain a valid ASIN in /dp/, /gp/product/, or asin= format')
+  return match[1].toUpperCase()
+}
+const listingView = (listing) => ({ ...listing, retailerName: retailerByKey(listing.retailer)?.name || listing.retailer })
 const createSnapshot = (productId) => {
   const product = getProduct(productId)
   return product.colors.flatMap((color, colorIndex) => retailerConfig.map((retailer, index) => {
@@ -93,10 +112,77 @@ const normalizedLiveEntry = (retailer, raw, product) => {
     color: color.name, colorValue: color.value, price, previous: asNumber(raw.previous),
     change: raw.previous ? Number((((price - Number(raw.previous)) / Number(raw.previous)) * 100).toFixed(1)) : 0,
     stock: raw.stock === false || raw.available === false ? 'Out of stock' : (raw.stock || 'In stock'),
-    delivery: raw.delivery || 'Check retailer', url: raw.url || process.env[retailer.env],
+    delivery: raw.delivery || 'Check retailer', url: raw.url,
     cardOffer: Boolean(raw.cardOffer), verified: true, dataMode: 'live',
     lastUpdated: new Date().toISOString(), source: raw.source || retailer.name,
   }
+}
+const fetchListing = async (listing, product) => {
+  const retailer = retailerByKey(listing.retailer)
+  if (!retailer) throw new Error(`No provider for retailer ${listing.retailer}`)
+  if (listing.retailer === 'amazon') {
+    if (!process.env.KEEPA_API_KEY) throw new Error('KEEPA_API_KEY is not configured')
+    const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(listing.asin)}&stats=1`)
+    if (!response.ok) throw new Error(`Keepa returned HTTP ${response.status}`)
+    const item = (await response.json()).products?.[0]
+    const price = item?.stats?.current?.[0]
+    const result = normalizedLiveEntry(retailer, { price: price > 0 ? price / 100 : null, url: listing.url, color: item?.color, source: 'Keepa' }, product)
+    if (!result) throw new Error('Keepa returned no current price')
+    return result
+  }
+  const actorId = process.env[`APIFY_${listing.retailer.toUpperCase()}_ACTOR_ID`]
+  if (!process.env.APIFY_API_TOKEN || !actorId) throw new Error(`Apify actor is not configured for ${listing.retailer}`)
+  const items = await apifyRun(actorId, { urls: [listing.url], productUrl: listing.url })
+  const result = items.map((item) => normalizedLiveEntry(retailer, { ...item, url: item.url || listing.url }, product)).find(Boolean)
+  if (!result) throw new Error('Apify returned no usable price')
+  return result
+}
+const updateListing = async (listing, result, error) => {
+  listing.lastCheckedAt = new Date().toISOString()
+  if (result) {
+    listing.lastPrice = result.price
+    listing.lastStock = result.stock
+    listing.variant = result.colorValue
+    listing.lastSuccessAt = listing.lastCheckedAt
+    listing.dataMode = 'live'
+    listing.verified = true
+    listing.consecutiveFailures = 0
+    if (mongoReady && listing._id) await ListingModel.findByIdAndUpdate(listing._id, listing)
+    if (mongoReady && listing._id) await PriceHistoryModel.create({ listingId: listing._id, productId: listing.productId, retailer: listing.retailer, variant: listing.variant, price: result.price, stock: result.stock, url: listing.url, fetchedAt: listing.lastSuccessAt, verified: true })
+    return result
+  }
+  listing.dataMode = 'unavailable'
+  listing.verified = false
+  listing.consecutiveFailures = (listing.consecutiveFailures || 0) + 1
+  if (mongoReady && listing._id) await ListingModel.findByIdAndUpdate(listing._id, listing)
+  console.error(`Listing refresh failed (${listing.url}): ${error.message}`)
+  return null
+}
+const refreshListings = async () => {
+  const active = listings.filter((listing) => listing.active)
+  const previous = new Map(priceSnapshots)
+  const grouped = new Map()
+  for (const listing of active) {
+    const product = getProduct(listing.productId)
+    try {
+      const result = await fetchListing(listing, product)
+      const updated = await updateListing(listing, result)
+      if (updated) {
+        const row = { ...updated, listingId: listing.id || listing._id?.toString(), listingUrl: listing.url }
+        grouped.set(listing.productId, [...(grouped.get(listing.productId) || []), row])
+        historyStore.set(listing.productId, [...(historyStore.get(listing.productId) || []), { ...row, date: listing.lastSuccessAt }].slice(-2160))
+      }
+    } catch (error) { await updateListing(listing, null, error) }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+  for (const product of catalog) {
+    const next = grouped.get(product.id) || []
+    priceSnapshots.set(product.id, next)
+    product.dataMode = active.some((item) => item.productId === product.id && item.dataMode === 'live') ? 'live' : (active.some((item) => item.productId === product.id) ? 'unavailable' : (liveModeConfigured() ? 'live' : 'demo'))
+    if (next.length) await persistPrices(product.id, next)
+    await evaluateAlerts(product, previous.get(product.id) || [])
+  }
+  liveProviderStatus = active.length && active.some((item) => item.dataMode === 'live') ? 'connected' : (active.length ? 'error' : 'not_configured')
 }
 const apifyRun = async (actorId, input) => {
   const response = await fetch(`https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(process.env.APIFY_API_TOKEN)}`, {
@@ -137,6 +223,7 @@ const fetchLivePrices = async (product) => {
   return entries
 }
 const refreshSnapshots = async () => {
+  if (listings.length || liveModeConfigured()) return refreshListings()
   const previous = new Map(priceSnapshots)
   lastSyncAt = new Date().toISOString()
   for (const product of catalog) {
@@ -225,18 +312,45 @@ async function evaluateAlerts(product, previous) {
   }
 }
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveProviderStatus === 'connected' ? 'live' : (liveModeConfigured() ? 'live_unavailable' : 'demo'), providers: liveProviderStatus }))
-app.get('/api/products', (_req, res) => res.json({ products: catalog }))
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveProviderStatus === 'connected' ? 'live' : (listings.length || liveModeConfigured() ? 'live_unavailable' : 'demo'), providers: liveProviderStatus }))
+app.get('/api/products', (_req, res) => res.json({ products: catalog.map((product) => ({ ...product, listings: listings.filter((listing) => listing.productId === product.id).map(listingView) })) }))
 app.post('/api/products', async (req, res) => {
-  const { name, brand, category, sourceUrl } = req.body || {}
-  if (!name?.trim() || !brand?.trim() || !category?.trim() || !sourceUrl?.trim()) return res.status(400).json({ error: 'Name, brand, category, and URL are required' })
-  try { new URL(sourceUrl) } catch { return res.status(400).json({ error: 'A valid product URL is required' }) }
-  const product = generateProduct(name, brand, category, sourceUrl)
-  if (catalog.some((item) => item.sku === product.sku)) return res.status(409).json({ error: 'A product with this SKU already exists' })
-  catalog.push(product)
-  priceSnapshots.set(product.id, createSnapshot(product.id))
-  await persistProduct(product)
-  return res.status(201).json({ product })
+  const { url = req.body?.sourceUrl, targetPrice } = req.body || {}
+  if (!url?.trim()) return res.status(400).json({ error: 'Product URL is required' })
+  let retailer
+  try { retailer = detectRetailer(url) } catch (error) { return res.status(400).json({ error: error.message }) }
+  let asin
+  if (retailer === 'amazon') {
+    try { asin = extractAsin(url) } catch (error) { return res.status(400).json({ error: error.message }) }
+  }
+  if (listings.some((listing) => listing.url === url)) return res.status(409).json({ error: 'This URL is already being tracked' })
+  if (mongoReady && await ListingModel.exists({ url })) return res.status(409).json({ error: 'This URL is already being tracked' })
+  const product = getProduct(req.body.productId)
+  const listing = { id: crypto.randomUUID(), productId: product.id, retailer, url, variant: 'unknown', asin, active: true, dataMode: 'unavailable', verified: false, consecutiveFailures: 0, targetPrice }
+  listings.push(listing)
+  await persistListing(listing)
+  await refreshListings()
+  return res.status(201).json({ product: { ...product, listings: listings.filter((item) => item.productId === product.id).map(listingView) }, listing: listingView(listing) })
+})
+app.post('/api/products/:id/refresh', async (req, res) => {
+  const listing = listings.find((item) => item.id === req.params.id || item._id?.toString() === req.params.id)
+  if (!listing) return res.status(404).json({ error: 'Listing not found' })
+  try {
+    const result = await fetchListing(listing, getProduct(listing.productId))
+    const price = await updateListing(listing, result)
+    priceSnapshots.set(listing.productId, [...(priceSnapshots.get(listing.productId) || []).filter((item) => item.listingId !== listing.id), { ...price, listingId: listing.id, listingUrl: listing.url }])
+    return res.json({ listing: listingView(listing), price })
+  } catch (error) {
+    await updateListing(listing, null, error)
+    return res.status(502).json({ listing: listingView(listing), error: error.message })
+  }
+})
+app.delete('/api/products/:id', async (req, res) => {
+  const listing = listings.find((item) => item.id === req.params.id || item._id?.toString() === req.params.id)
+  if (!listing) return res.status(404).json({ error: 'Listing not found' })
+  listing.active = false
+  if (mongoReady && listing._id) await ListingModel.findByIdAndUpdate(listing._id, { active: false })
+  return res.status(204).end()
 })
 app.get('/api/product/specs', (req, res) => res.json(getProduct(req.query.productId)))
 app.get('/api/prices', (req, res) => {
@@ -321,6 +435,12 @@ const persistAlert = async (alert) => {
     console.error('Alert persistence failed:', error.message)
   }
 }
+const persistListing = async (listing) => {
+  if (!mongoReady) return listing
+  const document = await ListingModel.findOneAndUpdate({ productId: listing.productId, url: listing.url }, listing, { upsert: true, new: true, setDefaultsOnInsert: true })
+  Object.assign(listing, document.toObject())
+  return listing
+}
 const productToDocument = (product) => ({ productId: product.id, name: product.name, brand: product.brand, category: product.category, sku: product.sku, sourceUrl: product.sourceUrl, description: product.description, specs: product.specs, colors: product.colors, dataMode: product.dataMode })
 
 if (process.env.MONGODB_URI) {
@@ -330,6 +450,9 @@ if (process.env.MONGODB_URI) {
       mongoStatus = 'connected'
       mongoReady = true
       await Promise.all(catalog.map((product) => persistProduct(product)))
+      const storedListings = await ListingModel.find({ active: true }).lean()
+      listings.push(...storedListings.map((listing) => ({ ...listing, id: listing._id.toString() })))
+      if (listings.length) await refreshListings()
       await Promise.all([...priceSnapshots.entries()].map(([productId, prices]) => persistPrices(productId, prices)))
       await Promise.all(alerts.map((alert) => persistAlert(alert)))
     } catch (error) {

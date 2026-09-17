@@ -36,6 +36,8 @@ Alerts are evaluated only after a scheduled price snapshot changes. Delivery att
 GET  /api/health
 GET  /api/products
 POST /api/products
+POST /api/products/:id/refresh
+DELETE /api/products/:id
 GET  /api/prices?productId=sennheiser-momentum-4-wireless
 GET  /api/prices/history/black?productId=sennheiser-momentum-4-wireless&range=1M
 GET  /api/comparison?productId=sennheiser-momentum-4-wireless
@@ -56,27 +58,21 @@ DELETE /api/alerts/:id
 7. Resize to 375px, 768px, and desktop widths; open/close the sidebar on mobile.
 8. Set provider credentials in `.env` and call the test notification endpoints only in development.
 
-## Production data honesty
-
 ## Live retailer providers
 
-Keepa is used for Amazon India and requires the fixed ASIN. Apify actors are used for the other fixed listings. Set each actor ID and listing URL in `.env`:
+Keepa is used for Amazon India and Apify actors are used for the other listings. Provider credentials are the only provider-specific values in `.env`:
 
 ```text
 KEEPA_API_KEY=
-AMAZON_ASIN=
-AMAZON_LISTING_URL=
 APIFY_API_TOKEN=
 APIFY_FLIPKART_ACTOR_ID=
 APIFY_CROMA_ACTOR_ID=
 APIFY_RELIANCE_DIGITAL_ACTOR_ID=
 APIFY_VIJAY_SALES_ACTOR_ID=
-FLIPKART_LISTING_URL=
-CROMA_LISTING_URL=
-RELIANCE_DIGITAL_LISTING_URL=
-VIJAY_SALES_LISTING_URL=
 ```
 
-Each actor must return an item containing `price` (or `currentPrice`/`salePrice`), and may return `color`, `stock`, `delivery`, `cardOffer`, and `url`. A successful response is stored with `dataMode: live`, `verified: true`, source URL, and timestamp. If live mode is configured but a provider fails, the API does not generate demo prices.
+Add a listing by pasting its URL in the dashboard or by sending `{ "url": "https://...", "targetPrice": 25000 }` to `POST /api/products`. The API detects the retailer from the hostname, extracts Amazon ASINs, rejects unsupported domains, deduplicates exact URLs, and fetches immediately. A successful response is stored with `dataMode: live`, `verified: true`, source URL, and timestamp. A failure becomes `dataMode: unavailable`; its last-known price is never treated as current and no fake history row is written.
+
+Run `npm run seed:listings` once after the base product has been persisted to seed the known Amazon ASIN listing. All future listings are added through the UI/API. No product URLs or ASINs are stored in `.env`.
 
 For static hosts such as Vercel, deploy the frontend as a static Vite build and configure `VITE_API_URL` to point to a separately deployed API. The included `vercel.json` only handles SPA fallback routing; it does not attempt to proxy API calls to `localhost`.

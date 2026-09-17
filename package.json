@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "server": "node server/index.js",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "seed:listings": "node server/seed-listings.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
