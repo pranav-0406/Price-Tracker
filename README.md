@@ -1,6 +1,6 @@
 # Price Tracker
 
-React/Vite frontend and Node/Express API for comparing product prices across Indian retailers. The current build is explicitly marked **Demo Data** because retailer scrapers are not connected; it does not claim that generated prices or history are verified.
+React/Vite frontend and Node/Express API for comparing product prices across Indian retailers. The current build is explicitly marked **Demo Data** because retailer scrapers are not connected. Generated values are kept internally only for layout/filter testing; the UI does not present them as current prices or verified history.
 
 ## Run locally
 
@@ -58,6 +58,6 @@ DELETE /api/alerts/:id
 
 ## Production data honesty
 
-Connect approved retailer APIs or compliant scraping workers before changing `dataMode` to `live`. Persist every verified scrape with its source URL and timestamp, and expose failed scrapes as unavailable/last-known rather than presenting stale values as current.
+Connect approved retailer APIs or compliant scraping workers before changing `dataMode` to `live`. Persist every verified scrape with its source URL and timestamp. Until then, the UI displays `Not verified` and `Verified history will appear...` instead of misleading users with generated prices.
 
 For static hosts such as Vercel, deploy the frontend as a static Vite build and configure `VITE_API_URL` to point to a separately deployed API. The included `vercel.json` only handles SPA fallback routing; it does not attempt to proxy API calls to `localhost`.

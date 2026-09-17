@@ -44,6 +44,7 @@ const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourc
     sku: `${brand.toUpperCase().slice(0, 4)}-${slug.slice(0, 8).toUpperCase()}`,
     sourceUrl,
     dataMode: 'demo',
+    image: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=800&q=85',
     description: `${cleanName} · premium audio device for everyday listening`,
     specs: { bluetooth: '5.2 · aptX Adaptive', battery: 'Up to 60 hours', connectivity: 'Wireless & USB-C', weight: '293 g' },
     colors: colors.map((color, index) => ({ ...color, price: basePrice + index * 1500, stock: 'In stock' })),
@@ -89,6 +90,7 @@ const refreshSnapshots = async () => {
 }
 const buildHistory = (productId, colorValue, days) => {
   const product = getProduct(productId)
+  if (product.dataMode !== 'live') return []
   const base = product.colors.find((color) => color.value === colorValue)?.price || product.colors[0].price
   const points = Math.max(7, Math.min(90, days))
   return Array.from({ length: points }, (_, index) => {
