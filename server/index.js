@@ -9,6 +9,7 @@ import crypto from 'node:crypto'
 import { AlertModel, ListingModel, PriceHistoryModel, PriceModel, ProductModel } from './models.js'
 
 dotenv.config()
+mongoose.set('bufferCommands', false)
 
 const app = express()
 const port = Number(process.env.PORT || 3001)
@@ -24,6 +25,7 @@ const retailerConfig = [
   { key: 'croma', name: 'Croma', short: 'c', colorHex: '#18a558' },
   { key: 'reliance_digital', name: 'Reliance Digital', short: 'r', colorHex: '#147dff' },
   { key: 'vijay_sales', name: 'Vijay Sales', short: 'v', colorHex: '#e84646' },
+  { key: 'sennheiser_official', name: 'Sennheiser', short: 's', colorHex: '#9b7653' },
 ]
 const colors = [
   { name: 'Black', value: 'black', colorHex: '#252525' },
@@ -70,10 +72,8 @@ const retailerByKey = (key) => retailerConfig.find((item) => item.key === key)
 const detectRetailer = (value) => {
   let hostname
   try { hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, '') } catch { throw new Error('A valid product URL is required') }
-  const match = retailerConfig.find((retailer) => hostname === retailer.key.replace('_', '') || (
-    retailer.key === 'amazon' && hostname === 'amazon.in') || (retailer.key === 'flipkart' && hostname === 'flipkart.com') ||
-    (retailer.key === 'croma' && hostname === 'croma.com') || (retailer.key === 'reliance_digital' && hostname === 'reliancedigital.in') ||
-    (retailer.key === 'vijay_sales' && hostname === 'vijaysales.com'))
+  const domains = { amazon: 'amazon.in', flipkart: 'flipkart.com', croma: 'croma.com', reliance_digital: 'reliancedigital.in', vijay_sales: 'vijaysales.com', sennheiser_official: 'in.sennheiser-hearing.com' }
+  const match = retailerConfig.find((retailer) => hostname === domains[retailer.key])
   if (!match) throw new Error(`Unsupported retailer domain: ${hostname}`)
   return match.key
 }
@@ -130,6 +130,14 @@ const fetchListing = async (listing, product) => {
     if (!result) throw new Error('Keepa returned no current price')
     return result
   }
+  if (listing.retailer === 'sennheiser_official') {
+    const actorId = process.env.APIFY_SENNHEISER_OFFICIAL_ACTOR_ID
+    if (!process.env.APIFY_API_TOKEN || !actorId) throw new Error('no provider configured for sennheiser_official')
+    const items = await apifyRun(actorId, { urls: [listing.url], productUrl: listing.url })
+    const result = items.map((item) => normalizedLiveEntry(retailer, { ...item, url: item.url || listing.url }, product)).find(Boolean)
+    if (!result) throw new Error('Sennheiser actor returned no usable price')
+    return result
+  }
   const actorId = process.env[`APIFY_${listing.retailer.toUpperCase()}_ACTOR_ID`]
   if (!process.env.APIFY_API_TOKEN || !actorId) throw new Error(`Apify actor is not configured for ${listing.retailer}`)
   const items = await apifyRun(actorId, { urls: [listing.url], productUrl: listing.url })
@@ -154,6 +162,7 @@ const updateListing = async (listing, result, error) => {
   listing.dataMode = 'unavailable'
   listing.verified = false
   listing.consecutiveFailures = (listing.consecutiveFailures || 0) + 1
+  listing.lastError = error.message
   if (mongoReady && listing._id) await ListingModel.findByIdAndUpdate(listing._id, listing)
   console.error(`Listing refresh failed (${listing.url}): ${error.message}`)
   return null
@@ -443,7 +452,7 @@ const persistListing = async (listing) => {
 }
 const productToDocument = (product) => ({ productId: product.id, name: product.name, brand: product.brand, category: product.category, sku: product.sku, sourceUrl: product.sourceUrl, description: product.description, specs: product.specs, colors: product.colors, dataMode: product.dataMode })
 
-if (process.env.MONGODB_URI) {
+if (process.env.MONGODB_URI && process.env.DISABLE_MONGO !== 'true') {
   const connectMongo = async () => {
     try {
       await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })

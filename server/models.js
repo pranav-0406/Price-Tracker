@@ -41,7 +41,7 @@ export const PriceModel = mongoose.models.Price || mongoose.model('Price', new m
 
 export const ListingModel = mongoose.models.Listing || mongoose.model('Listing', new mongoose.Schema({
   productId: { type: String, required: true, index: true },
-  retailer: { type: String, enum: ['amazon', 'flipkart', 'croma', 'reliance_digital', 'vijay_sales'], required: true },
+  retailer: { type: String, enum: ['amazon', 'flipkart', 'croma', 'reliance_digital', 'vijay_sales', 'sennheiser_official'], required: true },
   url: { type: String, required: true },
   variant: { type: String, default: 'unknown' },
   asin: String,
@@ -53,6 +53,7 @@ export const ListingModel = mongoose.models.Listing || mongoose.model('Listing',
   dataMode: { type: String, enum: ['live', 'unavailable'], default: 'unavailable' },
   verified: { type: Boolean, default: false },
   consecutiveFailures: { type: Number, default: 0 },
+  lastError: String,
 }, { timestamps: true }))
 ListingModel.schema.index({ productId: 1, url: 1 }, { unique: true })
 
