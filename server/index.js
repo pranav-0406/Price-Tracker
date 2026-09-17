@@ -27,9 +27,13 @@ const retailerConfig = [
   { name: 'Vijay Sales', short: 'v', colorHex: '#e84646', url: 'https://www.vijaysales.com/' },
 ]
 const colors = [
-  { name: 'Black', value: 'black', colorHex: '#252525', image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=300&q=80' },
-  { name: 'Silver', value: 'silver', colorHex: '#d8d8d8', image: 'https://images.unsplash.com/photo-1546435770-a3e426bf472b?auto=format&fit=crop&w=300&q=80' },
-  { name: 'White', value: 'white', colorHex: '#f5f5f2', image: 'https://images.unsplash.com/photo-1583394838336-acd977736f90?auto=format&fit=crop&w=300&q=80' },
+  { name: 'Black', value: 'black', colorHex: '#252525' },
+  { name: 'White', value: 'white', colorHex: '#f5f5f2' },
+  { name: 'Silver', value: 'silver', colorHex: '#bfc5c8' },
+  { name: 'Denim', value: 'denim', colorHex: '#3e5f83' },
+  { name: 'Graphite', value: 'graphite', colorHex: '#4c5054' },
+  { name: 'Copper', value: 'copper', colorHex: '#b46b52' },
+  { name: 'Green', value: 'green', colorHex: '#526a5a' },
 ]
 
 const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourceUrl = 'https://www.amazon.in/') => {
@@ -44,10 +48,10 @@ const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourc
     sku: `${brand.toUpperCase().slice(0, 4)}-${slug.slice(0, 8).toUpperCase()}`,
     sourceUrl,
     dataMode: 'demo',
-    image: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=800&q=85',
+    image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=800&q=85',
     description: `${cleanName} · premium audio device for everyday listening`,
     specs: { bluetooth: '5.2 · aptX Adaptive', battery: 'Up to 60 hours', connectivity: 'Wireless & USB-C', weight: '293 g' },
-    colors: colors.map((color, index) => ({ ...color, price: basePrice + index * 1500, stock: 'In stock' })),
+    colors: colors.map((color, index) => ({ ...color, image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=300&q=85', price: basePrice + index * 1500, stock: 'In stock' })),
   }
 }
 
