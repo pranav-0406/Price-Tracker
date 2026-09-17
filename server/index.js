@@ -4,7 +4,6 @@ import cron from 'node-cron'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import rateLimit from 'express-rate-limit'
-import sgMail from '@sendgrid/mail'
 import twilio from 'twilio'
 import crypto from 'node:crypto'
 import { AlertModel, PriceModel, ProductModel } from './models.js'
@@ -20,11 +19,11 @@ app.use(express.json({ limit: '20kb' }))
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: 'draft-7', legacyHeaders: false }))
 
 const retailerConfig = [
-  { name: 'Amazon', short: 'a', colorHex: '#f59e0b', url: 'https://www.amazon.in/' },
-  { name: 'Flipkart', short: 'f', colorHex: '#2874f0', url: 'https://www.flipkart.com/' },
-  { name: 'Croma', short: 'c', colorHex: '#18a558', url: 'https://www.croma.com/' },
-  { name: 'JioMart', short: 'j', colorHex: '#147dff', url: 'https://www.jiomart.com/' },
-  { name: 'Vijay Sales', short: 'v', colorHex: '#e84646', url: 'https://www.vijaysales.com/' },
+  { name: 'Amazon', short: 'a', colorHex: '#f59e0b', env: 'AMAZON_LISTING_URL' },
+  { name: 'Flipkart', short: 'f', colorHex: '#2874f0', env: 'FLIPKART_LISTING_URL' },
+  { name: 'Croma', short: 'c', colorHex: '#18a558', env: 'CROMA_LISTING_URL' },
+  { name: 'Reliance Digital', short: 'r', colorHex: '#147dff', env: 'RELIANCE_DIGITAL_LISTING_URL' },
+  { name: 'Vijay Sales', short: 'v', colorHex: '#e84646', env: 'VIJAY_SALES_LISTING_URL' },
 ]
 const colors = [
   { name: 'Black', value: 'black', colorHex: '#252525' },
@@ -63,6 +62,7 @@ const alerts = []
 let lastSyncAt = null
 let mongoStatus = 'not_configured'
 let mongoReady = false
+let liveProviderStatus = 'not_configured'
 
 const getProduct = (productId) => catalog.find((item) => item.id === productId) || catalog[0]
 const createSnapshot = (productId) => {
@@ -79,11 +79,71 @@ const createSnapshot = (productId) => {
     }
   }))
 }
+const liveModeConfigured = () => Boolean(process.env.KEEPA_API_KEY || process.env.APIFY_API_TOKEN)
+const asNumber = (value) => {
+  const number = Number(String(value ?? '').replace(/[^\d.]/g, ''))
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : null
+}
+const normalizedLiveEntry = (retailer, raw, product) => {
+  const price = asNumber(raw.price ?? raw.currentPrice ?? raw.salePrice ?? raw.offerPrice)
+  if (!price) return null
+  const color = colors.find((item) => item.value === String(raw.colorValue || raw.color || 'black').toLowerCase()) || colors[0]
+  return {
+    platform: retailer.name, short: retailer.short, colorHex: retailer.colorHex,
+    color: color.name, colorValue: color.value, price, previous: asNumber(raw.previous),
+    change: raw.previous ? Number((((price - Number(raw.previous)) / Number(raw.previous)) * 100).toFixed(1)) : 0,
+    stock: raw.stock === false || raw.available === false ? 'Out of stock' : (raw.stock || 'In stock'),
+    delivery: raw.delivery || 'Check retailer', url: raw.url || process.env[retailer.env],
+    cardOffer: Boolean(raw.cardOffer), verified: true, dataMode: 'live',
+    lastUpdated: new Date().toISOString(), source: raw.source || retailer.name,
+  }
+}
+const apifyRun = async (actorId, input) => {
+  const response = await fetch(`https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(process.env.APIFY_API_TOKEN)}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error(`Apify ${actorId} returned HTTP ${response.status}`)
+  const data = await response.json()
+  return Array.isArray(data) ? data : [data]
+}
+const fetchLivePrices = async (product) => {
+  const entries = []
+  const errors = []
+  if (process.env.KEEPA_API_KEY && process.env.AMAZON_ASIN) {
+    try {
+      const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(process.env.AMAZON_ASIN)}&stats=1`)
+      if (!response.ok) throw new Error(`Keepa returned HTTP ${response.status}`)
+      const payload = await response.json()
+      const item = payload.products?.[0]
+      const price = item?.stats?.current?.[0]
+      const result = normalizedLiveEntry(retailerConfig[0], { price: price > 0 ? price / 100 : null, url: process.env.AMAZON_LISTING_URL, color: item?.color, source: 'Keepa' }, product)
+      if (result) entries.push(result); else throw new Error('Keepa returned no current price')
+    } catch (error) { errors.push(`Amazon: ${error.message}`) }
+  }
+  for (const retailer of retailerConfig.slice(1)) {
+    const actorId = process.env[`APIFY_${retailer.name.toUpperCase().replace(/[^A-Z]+/g, '_')}_ACTOR_ID`]
+    const listingUrl = process.env[retailer.env]
+    if (!process.env.APIFY_API_TOKEN || !actorId || !listingUrl) continue
+    try {
+      const items = await apifyRun(actorId, { urls: [listingUrl], productUrl: listingUrl })
+      for (const item of items) {
+        const result = normalizedLiveEntry(retailer, { ...item, url: item.url || listingUrl }, product)
+        if (result) entries.push(result)
+      }
+      if (!items.length) throw new Error('Actor returned no items')
+    } catch (error) { errors.push(`${retailer.name}: ${error.message}`) }
+  }
+  if (errors.length) console.error(`Live price provider errors: ${errors.join('; ')}`)
+  return entries
+}
 const refreshSnapshots = async () => {
   const previous = new Map(priceSnapshots)
   lastSyncAt = new Date().toISOString()
   for (const product of catalog) {
-    const next = createSnapshot(product.id)
+    const livePrices = liveModeConfigured() ? await fetchLivePrices(product) : []
+    const next = liveModeConfigured() ? livePrices : createSnapshot(product.id)
+    product.dataMode = livePrices.length ? 'live' : (liveModeConfigured() ? 'live' : 'demo')
+    liveProviderStatus = liveModeConfigured() ? (livePrices.length ? 'connected' : 'error') : 'not_configured'
     priceSnapshots.set(product.id, next)
     const existing = historyStore.get(product.id) || []
     historyStore.set(product.id, [...existing, ...next.map((entry) => ({ ...entry, date: lastSyncAt }))].slice(-2160))
@@ -116,9 +176,13 @@ async function sendNotification(alert, event) {
   for (const channel of channels) {
     try {
       if (channel === 'email') {
-        if (!process.env.SENDGRID_API_KEY || !process.env.ALERT_FROM_EMAIL || !alert.email) throw new Error('Email provider or recipient is not configured')
-        sgMail.setApiKey(process.env.SENDGRID_API_KEY)
-        await sgMail.send({ to: alert.email, from: process.env.ALERT_FROM_EMAIL, subject, html })
+        if (!process.env.RESEND_API_KEY || !process.env.ALERT_FROM_EMAIL || !alert.email) throw new Error('Resend or recipient is not configured')
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ from: process.env.ALERT_FROM_EMAIL, to: [alert.email], subject, html }),
+        })
+        if (!response.ok) throw new Error(`Resend returned HTTP ${response.status}`)
       } else {
         if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER || !alert.phone) throw new Error('SMS provider or recipient is not configured')
         const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
@@ -126,8 +190,14 @@ async function sendNotification(alert, event) {
       }
     } catch (error) {
       try {
-        if (channel === 'email' && process.env.SENDGRID_API_KEY && process.env.ALERT_FROM_EMAIL && alert.email) await sgMail.send({ to: alert.email, from: process.env.ALERT_FROM_EMAIL, subject, html })
-        else throw error
+        if (channel === 'email' && process.env.RESEND_API_KEY && process.env.ALERT_FROM_EMAIL && alert.email) {
+          const response = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ from: process.env.ALERT_FROM_EMAIL, to: [alert.email], subject, html }),
+          })
+          if (!response.ok) throw new Error(`Resend retry returned HTTP ${response.status}`)
+        } else throw error
       } catch (retryError) {
         result.errors.push(`${channel}: ${retryError.message}`)
       }
@@ -155,7 +225,7 @@ async function evaluateAlerts(product, previous) {
   }
 }
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: 'demo' }))
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveProviderStatus === 'connected' ? 'live' : (liveModeConfigured() ? 'live_unavailable' : 'demo'), providers: liveProviderStatus }))
 app.get('/api/products', (_req, res) => res.json({ products: catalog }))
 app.post('/api/products', async (req, res) => {
   const { name, brand, category, sourceUrl } = req.body || {}
@@ -175,11 +245,12 @@ app.get('/api/prices', (req, res) => {
   const values = prices.map((entry) => entry.price)
   const average = values.reduce((sum, value) => sum + value, 0) / (values.length || 1)
   const variance = values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length || 1)
-  res.json({ updatedAt: lastSyncAt, dataMode: 'demo', prices, stats: { average: Math.round(average), lowest: Math.min(...values), highest: Math.max(...values), volatility: Math.sqrt(variance) } })
+  res.json({ updatedAt: lastSyncAt, dataMode: product.dataMode, prices, stats: { average: values.length ? Math.round(average) : null, lowest: values.length ? Math.min(...values) : null, highest: values.length ? Math.max(...values) : null, volatility: values.length ? Math.sqrt(variance) : null } })
 })
 app.get('/api/prices/history/:color', (req, res) => {
   const rangeDays = { '1W': 7, '1M': 30, '3M': 90 }[req.query.range] || 90
-  res.json({ color: req.params.color, range: rangeDays, dataMode: 'demo', history: buildHistory(req.query.productId, req.params.color, rangeDays) })
+  const product = getProduct(req.query.productId)
+  res.json({ color: req.params.color, range: rangeDays, dataMode: product.dataMode, history: product.dataMode === 'live' ? (historyStore.get(product.id) || []).filter((item) => item.colorValue === req.params.color) : [] })
 })
 app.get('/api/comparison', (req, res) => res.json({ productId: getProduct(req.query.productId).id, offers: [...(priceSnapshots.get(getProduct(req.query.productId).id) || [])].sort((a, b) => a.price - b.price) }))
 app.post('/api/alerts', async (req, res) => {
@@ -237,7 +308,6 @@ const persistProduct = async (product) => {
 const persistPrices = async (productId, prices) => {
   if (!mongoReady) return
   try {
-    await PriceModel.deleteMany({ productId })
     await PriceModel.insertMany(prices.map((price) => ({ ...price, productId, lastUpdated: price.lastUpdated })))
   } catch (error) {
     console.error('Price persistence failed:', error.message)

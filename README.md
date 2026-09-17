@@ -1,6 +1,6 @@
 # Price Tracker
 
-React/Vite frontend and Node/Express API for comparing product prices across Indian retailers. The current build is explicitly marked **Demo Data** because retailer scrapers are not connected. Generated values are kept internally only for layout/filter testing; the UI does not present them as current prices or verified history.
+React/Vite frontend and Node/Express API for comparing product prices across Indian retailers. Configure the live providers below to replace generated values with verified provider responses.
 
 ## Run locally
 
@@ -16,10 +16,10 @@ For a production-style single process, run `npm run build` followed by `npm star
 
 ## Alert delivery
 
-Email uses SendGrid and SMS uses Twilio. Configure the following variables before sending real notifications:
+Email uses Resend and SMS uses Twilio. Configure the following variables before sending real notifications:
 
 ```text
-SENDGRID_API_KEY=
+RESEND_API_KEY=
 ALERT_FROM_EMAIL=
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
@@ -58,6 +58,25 @@ DELETE /api/alerts/:id
 
 ## Production data honesty
 
-Connect approved retailer APIs or compliant scraping workers before changing `dataMode` to `live`. Persist every verified scrape with its source URL and timestamp. Until then, the UI displays `Not verified` and `Verified history will appear...` instead of misleading users with generated prices.
+## Live retailer providers
+
+Keepa is used for Amazon India and requires the fixed ASIN. Apify actors are used for the other fixed listings. Set each actor ID and listing URL in `.env`:
+
+```text
+KEEPA_API_KEY=
+AMAZON_ASIN=
+AMAZON_LISTING_URL=
+APIFY_API_TOKEN=
+APIFY_FLIPKART_ACTOR_ID=
+APIFY_CROMA_ACTOR_ID=
+APIFY_RELIANCE_DIGITAL_ACTOR_ID=
+APIFY_VIJAY_SALES_ACTOR_ID=
+FLIPKART_LISTING_URL=
+CROMA_LISTING_URL=
+RELIANCE_DIGITAL_LISTING_URL=
+VIJAY_SALES_LISTING_URL=
+```
+
+Each actor must return an item containing `price` (or `currentPrice`/`salePrice`), and may return `color`, `stock`, `delivery`, `cardOffer`, and `url`. A successful response is stored with `dataMode: live`, `verified: true`, source URL, and timestamp. If live mode is configured but a provider fails, the API does not generate demo prices.
 
 For static hosts such as Vercel, deploy the frontend as a static Vite build and configure `VITE_API_URL` to point to a separately deployed API. The included `vercel.json` only handles SPA fallback routing; it does not attempt to proxy API calls to `localhost`.
