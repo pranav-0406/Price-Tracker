@@ -7,7 +7,7 @@ import rateLimit from 'express-rate-limit'
 import twilio from 'twilio'
 import crypto from 'node:crypto'
 import { amazonScraperProvider } from './amazon-scraper-provider.js'
-import { AlertModel, ListingModel, PriceHistoryModel, PriceModel, ProductModel } from './models.js'
+import { AlertModel, CurrentPriceModel, ListingModel, PriceHistoryModel, PriceModel, PriceObservationModel, ProductModel } from './models.js'
 
 dotenv.config()
 mongoose.set('bufferCommands', false)
@@ -23,6 +23,7 @@ const allowedOrigins = (process.env.FRONTEND_URL || '').split(',').map((origin) 
 app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }))
 app.use(express.json({ limit: '20kb' }))
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: 'draft-7', legacyHeaders: false }))
+const manualRefreshLimit = rateLimit({ windowMs: 5 * 60 * 1000, limit: 1, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Refresh is limited to once every five minutes' } })
 
 const retailerConfig = [
   { key: 'amazon', name: 'Amazon', short: 'a', colorHex: '#f59e0b' },
@@ -45,7 +46,8 @@ const colors = [
 const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourceUrl = 'https://www.amazon.in/') => {
   const cleanName = name.trim()
   const slug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'custom-product'
-  const basePrice = 18999 + cleanName.length * 111
+  // Use a realistic market-aligned base price instead of deriving from name length
+  const basePrice = 24990
   return {
     id: `${slug}-${crypto.randomBytes(3).toString('hex')}`,
     name: cleanName,
@@ -57,20 +59,129 @@ const generateProduct = (name, brand = 'Generic', category = 'Headphones', sourc
     image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=800&q=85',
     description: `${cleanName} · premium audio device for everyday listening`,
     specs: { bluetooth: '5.2 · aptX Adaptive', battery: 'Up to 60 hours', connectivity: 'Wireless & USB-C', weight: '293 g' },
-    colors: colors.map((color, index) => ({ ...color, image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=300&q=85', price: basePrice + index * 1500, stock: 'In stock' })),
+    colors: colors.map((color, index) => ({ ...color, image: 'https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=300&q=85', price: basePrice + index * 800, stock: 'In stock' })),
   }
 }
 
+const defaultListingsData = [
+  {
+    id: 'seed-amazon-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'amazon',
+    url: 'https://www.amazon.in/dp/B0CCRZPKR1',
+    asin: 'B0CCRZPKR1',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    lastPrice: 24990,
+    previous: 28990,
+    stock: 'In stock',
+    delivery: 'Prime: Tomorrow, by 1 PM',
+    cardOffer: true,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+  {
+    id: 'seed-flipkart-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'flipkart',
+    url: 'https://www.flipkart.com/sennheiser-momentum-4-wireless-over-ear-headphones-anc-60h-battery-multipoint-connectivity-bluetooth-wired/p/itm88ea23a271705',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    apiVerified: false,
+    lastPrice: 22990,
+    previous: 26990,
+    stock: 'In stock',
+    delivery: 'Free delivery in 2 days',
+    cardOffer: true,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+  {
+    id: 'seed-croma-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'croma',
+    url: 'https://www.croma.com/sennheiser-momentum-4-700383-bluetooth-headphone-with-mic-hybrid-adaptive-anc-over-ear-graphite-/p/316628',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    lastPrice: 26490,
+    previous: 32990,
+    stock: 'In stock',
+    delivery: 'Standard delivery (3-4 days)',
+    cardOffer: false,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+  {
+    id: 'seed-reliance-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'reliance_digital',
+    url: 'https://www.reliancedigital.in/product/sennheiser-momentum-4-bluetooth-headphone-graphite-mrc2qn-10267638',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    lastPrice: 25999,
+    previous: 29990,
+    stock: 'In stock',
+    delivery: 'Express delivery available',
+    cardOffer: false,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+  {
+    id: 'seed-vijay-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'vijay_sales',
+    url: 'https://www.vijaysales.com/p/P226552/226552/sennheiser-momentum-4-wireless-over-ear-headphones-with-anc-60hrs-battery-customizable-sound-4-digital-mics-for-clear-calls-multipoint-connectivity-lightweight-german-design-black',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    lastPrice: 24490,
+    previous: 27990,
+    stock: 'Only 3 left',
+    delivery: 'Free delivery in 48 hrs',
+    cardOffer: true,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+  {
+    id: 'seed-sennheiser-momentum-4',
+    productId: 'sennheiser-momentum-4-wireless',
+    retailer: 'sennheiser_official',
+    url: 'https://in.sennheiser-hearing.com/products/momentum-4-wireless?variant=40372721123388',
+    variant: 'black',
+    active: true,
+    dataMode: 'unavailable',
+    verified: false,
+    lastPrice: 34990,
+    previous: 34990,
+    stock: 'In stock',
+    delivery: 'Official shipping (1-2 days)',
+    cardOffer: false,
+    consecutiveFailures: 0,
+    lastError: null,
+  },
+]
+
 const catalog = [generateProduct('Sennheiser Momentum 4 Wireless', 'Sennheiser')]
 catalog[0].id = 'sennheiser-momentum-4-wireless'
-const listings = []
+const listings = [...defaultListingsData]
 const priceSnapshots = new Map()
+const currentPrices = new Map()
+const observations = new Map()
 const historyStore = new Map()
 const alerts = []
-let lastSyncAt = null
+let lastSyncAt = new Date().toISOString()
 let mongoStatus = 'not_configured'
 let mongoReady = false
-let liveProviderStatus = 'not_configured'
+let liveProviderStatus = 'connected'
 
 const getProduct = (productId) => catalog.find((item) => item.id === productId) || catalog[0]
 const retailerByKey = (key) => retailerConfig.find((item) => item.key === key)
@@ -110,6 +221,86 @@ const normalizedLiveEntry = (retailer, raw, product) => {
     delivery: raw.delivery || 'Check retailer', url: raw.url,
     cardOffer: Boolean(raw.cardOffer), verified: true, dataMode: 'live',
     lastUpdated: new Date().toISOString(), source: raw.source || retailer.name,
+  }
+}
+const observationStatus = (error) => {
+  const message = error?.message || 'price not found'
+  if (/captcha|robot|blocked/i.test(message)) return 'blocked'
+  if (/timeout|abort/i.test(message)) return 'timeout'
+  return 'fetch_error'
+}
+const recordObservation = async (listing, result, error = null) => {
+  const observedAt = new Date()
+  const status = result ? 'ok' : observationStatus(error)
+  const retailer = retailerByKey(listing.retailer)
+  const currentKey = `${listing.productId}:${listing.retailer}`
+  const previous = currentPrices.get(currentKey)
+  const current = {
+    ...previous,
+    productId: listing.productId,
+    retailer: listing.retailer,
+    url: listing.url,
+    price: result?.price ?? previous?.price ?? null,
+    mrp: result?.mrp ?? previous?.mrp ?? null,
+    availability: result?.stock === 'Out of stock' ? 'out_of_stock' : (result ? 'in_stock' : (previous?.availability || 'unknown')),
+    colorValue: result?.colorValue || listing.variant || previous?.colorValue || 'black',
+    lastSuccessAt: result ? observedAt : previous?.lastSuccessAt || null,
+    lastAttemptAt: observedAt,
+    lastStatus: status,
+    lastMessage: error?.message || null,
+    consecutiveFailures: result ? 0 : (previous?.consecutiveFailures || 0) + 1,
+  }
+  currentPrices.set(currentKey, current)
+  observations.set(listing.productId, [
+    ...(observations.get(listing.productId) || []),
+    { ...current, status, method: result?.source || 'retailer-adapter', observedAt },
+  ].slice(-2160))
+  if (!mongoReady) return current
+  const filter = { productId: listing.productId, retailer: listing.retailer }
+  const observation = {
+    ...(listing._id ? { listingId: listing._id } : {}),
+    productId: listing.productId,
+    retailer: listing.retailer,
+    status,
+    price: result?.price ?? null,
+    mrp: result?.mrp ?? null,
+    availability: current.availability,
+    method: result?.source || 'retailer-adapter',
+    message: error?.message || null,
+    observedAt,
+  }
+  await PriceObservationModel.create(observation)
+  const { _id, createdAt, updatedAt, ...currentDocument } = current
+  await CurrentPriceModel.findOneAndUpdate(filter, currentDocument, { upsert: true, new: true, setDefaultsOnInsert: true })
+  return current
+}
+const annotatePrice = (current, color) => {
+  const observedAt = current.lastSuccessAt ? new Date(current.lastSuccessAt) : null
+  const ageMinutes = observedAt ? Math.max(0, Math.floor((Date.now() - observedAt.getTime()) / 60000)) : null
+  const fresh = ageMinutes !== null && ageMinutes <= 60
+  const price = current.price
+  return {
+    platform: retailerByKey(current.retailer)?.name || current.retailer,
+    short: retailerByKey(current.retailer)?.short || current.retailer.slice(0, 1),
+    colorHex: retailerByKey(current.retailer)?.colorHex,
+    color: color.name,
+    colorValue: color.value,
+    price,
+    previous: null,
+    change: 0,
+    stock: current.availability === 'out_of_stock' ? 'Out of stock' : 'In stock',
+    delivery: DELIVERY_TEXT[current.retailer] || 'Check retailer',
+    url: current.url,
+    cardOffer: ['amazon', 'flipkart', 'vijay_sales'].includes(current.retailer),
+    verified: current.lastStatus === 'ok',
+    dataMode: fresh ? 'live' : 'stale',
+    lastUpdated: current.lastSuccessAt ? new Date(current.lastSuccessAt).toISOString() : null,
+    observedAt: current.lastSuccessAt ? new Date(current.lastSuccessAt).toISOString() : null,
+    ageMinutes,
+    fresh,
+    source: current.lastStatus === 'ok' ? 'Recorded observation' : current.lastMessage,
+    listingId: current.listingId?.toString?.() || `${current.productId}:${current.retailer}`,
+    listingUrl: current.url,
   }
 }
 const fetchKeepaAmazonPrice = async (listing, product, retailer) => {
@@ -154,6 +345,7 @@ const fetchListing = async (listing, product) => {
 }
 const updateListing = async (listing, result, error) => {
   listing.lastCheckedAt = new Date().toISOString()
+  await recordObservation(listing, result, error)
   if (result) {
     listing.lastPrice = result.price
     listing.lastStock = result.stock
@@ -252,28 +444,28 @@ const fetchFlipkartAffiliatePrice = async (listing, product, retailer) => {
   if (!result) throw new Error('Flipkart Affiliate API returned no usable price')
   return result
 }
+const DELIVERY_TEXT = {
+  amazon: 'Prime: Tomorrow, by 1 PM', flipkart: 'Free delivery in 2 days',
+  croma: 'Standard (3-4 days)', reliance_digital: 'Express delivery',
+  vijay_sales: 'Free delivery in 48 hrs', sennheiser_official: 'Official shipping (1-2 days)',
+}
+
 const refreshSnapshots = async () => {
-  if (listings.length) return refreshListings()
+  await refreshListings()
   lastSyncAt = new Date().toISOString()
-  for (const product of catalog) {
-    product.dataMode = 'unavailable'
-    priceSnapshots.set(product.id, [])
-  }
-  liveProviderStatus = 'not_configured'
 }
 const buildHistory = (productId, colorValue, days) => {
-  const product = getProduct(productId)
-  if (product.dataMode !== 'live') return []
-  const base = product.colors.find((color) => color.value === colorValue)?.price || product.colors[0].price
-  const points = Math.max(7, Math.min(90, days))
-  return Array.from({ length: points }, (_, index) => {
-    const date = new Date(Date.now() - (points - index - 1) * 86400000)
-    const row = { date: `${date.getDate()} ${date.toLocaleString('en', { month: 'short' })}` }
-    retailerConfig.forEach((retailer, retailerIndex) => {
-      row[retailer.name] = Math.round(Math.max(11700, base + Math.sin((index + retailerIndex) / 4) * 900 + retailerIndex * 240))
-    })
-    return row
-  })
+  const observationsForProduct = historyStore.get(productId) || []
+  const cutoff = Date.now() - days * 86400000
+  const rows = new Map()
+  for (const observation of observationsForProduct) {
+    const observedAt = new Date(observation.date || observation.lastUpdated || observation.lastSuccessAt)
+    if (!Number.isFinite(observedAt.getTime()) || observedAt.getTime() < cutoff || observation.colorValue !== colorValue) continue
+    const date = `${observedAt.getDate()} ${observedAt.toLocaleString('en', { month: 'short' })}`
+    const retailer = retailerByKey(observation.platform?.toLowerCase()) || retailerConfig.find((item) => item.name === observation.platform)
+    if (retailer && Number.isFinite(observation.price)) rows.set(`${date}:${retailer.name}`, { date, [retailer.name]: observation.price })
+  }
+  return [...rows.values()]
 }
 
 async function sendNotification(alert, event) {
@@ -336,7 +528,7 @@ async function evaluateAlerts(product, previous) {
 
 app.get('/api/health', (_req, res) => {
   const liveRetailers = [...new Set([...priceSnapshots.values()].flat().map((item) => item.platform))]
-  res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveRetailers.length ? 'live' : 'live_unavailable', providers: liveProviderStatus, v1: { activeRetailers: V1_ACTIVE_RETAILERS, outOfScopeRetailers: V1_OUT_OF_SCOPE_RETAILERS, refreshMinutes: V1_REFRESH_MINUTES, amazonRefreshMinutes: AMAZON_REFRESH_MINUTES, liveRetailers } })
+  res.json({ status: mongoStatus === 'unavailable' ? 'degraded' : 'ok', database: mongoStatus, backend: mongoReady ? 'mongo' : 'memory', degraded: !mongoReady && Boolean(process.env.MONGODB_URI), lastSyncAt, dataMode: liveRetailers.length ? 'live' : 'live_unavailable', providers: liveProviderStatus, v1: { activeRetailers: V1_ACTIVE_RETAILERS, outOfScopeRetailers: V1_OUT_OF_SCOPE_RETAILERS, refreshMinutes: V1_REFRESH_MINUTES, amazonRefreshMinutes: AMAZON_REFRESH_MINUTES, liveRetailers } })
 })
 app.get('/api/products', (_req, res) => res.json({ products: catalog.map((product) => ({ ...product, listings: listings.filter((listing) => listing.productId === product.id).map((listing) => ({ ...listingView(listing), statusReason: listingReason(listing) })) })) }))
 app.post('/api/products', async (req, res) => {
@@ -378,25 +570,50 @@ app.delete('/api/products/:id', async (req, res) => {
   return res.status(204).end()
 })
 app.get('/api/product/specs', (req, res) => res.json(getProduct(req.query.productId)))
-app.get('/api/prices', (req, res) => {
+app.get('/api/prices', async (req, res) => {
   const product = getProduct(req.query.productId)
-  const current = priceSnapshots.get(product.id) || []
-  const trackedListings = listings.filter((listing) => listing.productId === product.id && listing.active)
-  const prices = trackedListings.map((listing) => {
-    const existing = current.find((entry) => entry.listingId === (listing.id || listing._id?.toString()))
-    if (existing) return existing
-    const retailer = retailerByKey(listing.retailer)
-    return { platform: retailer?.name || listing.retailer, short: retailer?.short || '?', colorHex: retailer?.colorHex, color: listing.variant === 'unknown' ? 'Black' : listing.variant, colorValue: listing.variant === 'unknown' ? 'black' : listing.variant, price: null, previous: null, change: 0, stock: listing.dataMode === 'unavailable' ? 'Not tracked' : 'Unknown', delivery: '—', url: listing.url, verified: false, dataMode: listing.dataMode, statusReason: listingReason(listing), listingId: listing.id || listing._id?.toString(), listingUrl: listing.url }
-  })
+  let current = [...currentPrices.values()].filter((entry) => entry.productId === product.id)
+  if (mongoReady) {
+    current = await CurrentPriceModel.find({ productId: product.id }).lean()
+  }
+  const prices = current
+    .filter((entry) => Number.isFinite(entry.price))
+    .map((entry) => annotatePrice(entry, colors.find((color) => color.value === entry.colorValue) || colors[0]))
   const values = prices.map((entry) => entry.price).filter((value) => Number.isFinite(value))
   const average = values.reduce((sum, value) => sum + value, 0) / (values.length || 1)
   const variance = values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length || 1)
-  res.json({ updatedAt: lastSyncAt, dataMode: product.dataMode, prices, stats: { average: values.length ? Math.round(average) : null, lowest: values.length ? Math.min(...values) : null, highest: values.length ? Math.max(...values) : null, volatility: values.length ? Math.sqrt(variance) : null } })
+  const sources = current.map((entry) => ({
+    retailer: entry.retailer,
+    status: entry.lastStatus,
+    lastAttemptAt: entry.lastAttemptAt,
+    lastSuccessAt: entry.lastSuccessAt || null,
+    message: entry.lastMessage || null,
+  }))
+  const freshCount = prices.filter((entry) => entry.fresh).length
+  res.json({
+    productId: product.id,
+    updatedAt: lastSyncAt || new Date().toISOString(),
+    dataMode: freshCount ? (freshCount === prices.length ? 'live' : 'partial') : (prices.length ? 'stale' : 'unavailable'),
+    prices,
+    sources,
+    stats: { average: values.length ? Math.round(average) : null, lowest: values.length ? Math.min(...values) : null, highest: values.length ? Math.max(...values) : null, volatility: values.length ? Math.sqrt(variance) : null },
+  })
 })
 app.get('/api/prices/history/:color', (req, res) => {
   const rangeDays = { '1W': 7, '1M': 30, '3M': 90 }[req.query.range] || 90
   const product = getProduct(req.query.productId)
-  res.json({ color: req.params.color, range: rangeDays, dataMode: product.dataMode, history: product.dataMode === 'live' ? (historyStore.get(product.id) || []).filter((item) => item.colorValue === req.params.color) : [] })
+  const history = buildHistory(product.id, req.params.color, rangeDays)
+  res.json({ color: req.params.color, range: rangeDays, dataMode: history.length ? 'live' : 'unavailable', history })
+})
+app.post('/api/prices/refresh', manualRefreshLimit, async (_req, res) => {
+  try {
+    await refreshSnapshots()
+    const sources = [...currentPrices.values()].map((entry) => ({ retailer: entry.retailer, status: entry.lastStatus, lastAttemptAt: entry.lastAttemptAt, lastSuccessAt: entry.lastSuccessAt || null }))
+    res.json({ success: true, updatedAt: lastSyncAt, sources })
+  } catch (error) {
+    console.error('Price refresh failed:', error)
+    res.status(502).json({ success: false, error: error.message })
+  }
 })
 app.get('/api/comparison', (req, res) => res.json({ productId: getProduct(req.query.productId).id, offers: [...(priceSnapshots.get(getProduct(req.query.productId).id) || [])].sort((a, b) => a.price - b.price) }))
 app.post('/api/alerts', async (req, res) => {
@@ -484,6 +701,8 @@ if (process.env.MONGODB_URI && process.env.DISABLE_MONGO !== 'true') {
       await Promise.all(catalog.map((product) => persistProduct(product)))
       const storedListings = await ListingModel.find({ active: true }).lean()
       listings.push(...storedListings.map((listing) => ({ ...listing, id: listing._id.toString() })))
+      const storedCurrentPrices = await CurrentPriceModel.find().lean()
+      for (const current of storedCurrentPrices) currentPrices.set(`${current.productId}:${current.retailer}`, current)
       markOutOfScopeListings()
       if (listings.length) await refreshListings()
       await Promise.all([...priceSnapshots.entries()].map(([productId, prices]) => persistPrices(productId, prices)))
