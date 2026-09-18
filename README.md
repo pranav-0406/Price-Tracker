@@ -49,7 +49,7 @@ DELETE /api/alerts/:id
 
 ## Manual verification
 
-1. Confirm the dashboard shows V1 live scope status, a sync time, calculated average/min/max/volatility, and a 30-minute refresh label.
+1. Confirm the dashboard shows V1 live scope status, a sync time, calculated average/min/max/volatility, and an Amazon refresh interval of at least 60 minutes.
 2. Select every color and each history range; verify the chart and table update.
 3. Change sorting and platform/color/min/max filters; verify the highlighted first row is the filtered cheapest offer.
 4. Open retailer links and verify they open a new tab.
@@ -60,7 +60,7 @@ DELETE /api/alerts/:id
 
 ## Live retailer providers
 
-Keepa is used for Amazon India and Apify actors are used for the other listings. Provider credentials are the only provider-specific values in `.env`:
+Amazon India uses a self-hosted Playwright scraper by default. If `KEEPA_API_KEY` is configured, the existing Keepa provider is selected instead. Apify actors are used for future-phase listings. Provider credentials are the only provider-specific values in `.env`:
 
 ```text
 KEEPA_API_KEY=
@@ -75,9 +75,21 @@ Add a listing by pasting its URL in the dashboard or by sending `{ "url": "https
 
 Run `npm run seed:listings` once after the base product has been persisted to seed the known Amazon ASIN listing. All future listings are added through the UI/API. No product URLs or ASINs are stored in `.env`.
 
+## Amazon scraper caveat
+
+The Playwright Amazon provider is a stopgap for a personal/hobby deployment. Directly scraping Amazon may violate Amazon's Terms of Service and can trigger CAPTCHA or bot checks; it is not recommended for a public or commercial deployment at scale. The scraper uses a 60-minute minimum refresh cadence, randomized 2-4 second pre-navigation delays, and closes its browser after every fetch, but blocking remains possible and results must be treated as best-effort.
+
+Run a real one-off probe with:
+
+```powershell
+npm.cmd run test:amazon-scraper
+```
+
+The command reports elapsed time, price/stock/title on success, or a distinct CAPTCHA error on blocking. A failed fetch is stored as unavailable and does not create price history.
+
 ## V1 scope
 
-V1 actively fetches Amazon listings through Keepa. Refreshes run every 30 minutes, controlled by `V1_REFRESH_MINUTES` in the server code and the `V1_ACTIVE_RETAILERS` setting (default: `amazon,flipkart`). Amazon is live only when `KEEPA_API_KEY` is configured and the saved listing is successfully fetched.
+V1 actively fetches Amazon listings through Playwright by default, or Keepa when `KEEPA_API_KEY` is configured. Amazon refreshes run every 60 minutes through the named `AMAZON_REFRESH_MINUTES` constant; the general V1 interval remains separately named. Amazon is live only after a successful provider response.
 
 Flipkart is intentionally gated. The app does not call an Affiliate API or scraper for a listing until that listing has `apiVerified: true`. After obtaining credentials, run:
 

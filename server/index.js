@@ -6,6 +6,7 @@ import mongoose from 'mongoose'
 import rateLimit from 'express-rate-limit'
 import twilio from 'twilio'
 import crypto from 'node:crypto'
+import { amazonScraperProvider } from './amazon-scraper-provider.js'
 import { AlertModel, ListingModel, PriceHistoryModel, PriceModel, ProductModel } from './models.js'
 
 dotenv.config()
@@ -14,6 +15,7 @@ mongoose.set('bufferCommands', false)
 const app = express()
 const port = Number(process.env.PORT || 3001)
 const V1_REFRESH_MINUTES = 30
+const AMAZON_REFRESH_MINUTES = 60
 const V1_ACTIVE_RETAILERS = (process.env.V1_ACTIVE_RETAILERS || 'amazon,flipkart').split(',').map((value) => value.trim()).filter(Boolean)
 const V1_OUT_OF_SCOPE_RETAILERS = ['croma', 'reliance_digital', 'vijay_sales', 'sennheiser_official']
 const isProduction = process.env.NODE_ENV === 'production'
@@ -110,20 +112,28 @@ const normalizedLiveEntry = (retailer, raw, product) => {
     lastUpdated: new Date().toISOString(), source: raw.source || retailer.name,
   }
 }
+const fetchKeepaAmazonPrice = async (listing, product, retailer) => {
+  if (!process.env.KEEPA_API_KEY) throw new Error('KEEPA_API_KEY is not configured')
+  const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(listing.asin)}&stats=1`)
+  if (!response.ok) throw new Error(`Keepa returned HTTP ${response.status}`)
+  const item = (await response.json()).products?.[0]
+  const price = item?.stats?.current?.[0]
+  const result = normalizedLiveEntry(retailer, { price: price > 0 ? price / 100 : null, url: listing.url, color: item?.color, source: 'Keepa' }, product)
+  if (!result) throw new Error('Keepa returned no current price')
+  return result
+}
 const fetchListing = async (listing, product) => {
   const retailer = retailerByKey(listing.retailer)
   if (!retailer) throw new Error(`No provider for retailer ${listing.retailer}`)
   if (!V1_ACTIVE_RETAILERS.includes(listing.retailer)) throw new Error('retailer not yet supported in v1')
   if (listing.retailer === 'flipkart' && !listing.apiVerified) throw new Error('pending Flipkart API compatibility verification')
   if (listing.retailer === 'amazon') {
-    if (!process.env.KEEPA_API_KEY) throw new Error('KEEPA_API_KEY is not configured')
-    const response = await fetch(`https://api.keepa.com/product?key=${encodeURIComponent(process.env.KEEPA_API_KEY)}&domain=10&asin=${encodeURIComponent(listing.asin)}&stats=1`)
-    if (!response.ok) throw new Error(`Keepa returned HTTP ${response.status}`)
-    const item = (await response.json()).products?.[0]
-    const price = item?.stats?.current?.[0]
-    const result = normalizedLiveEntry(retailer, { price: price > 0 ? price / 100 : null, url: listing.url, color: item?.color, source: 'Keepa' }, product)
-    if (!result) throw new Error('Keepa returned no current price')
-    return result
+    // Keepa remains available when KEEPA_API_KEY is configured; the self-hosted scraper is the default otherwise.
+    if (process.env.KEEPA_API_KEY) return fetchKeepaAmazonPrice(listing, product, retailer)
+    const result = await amazonScraperProvider.fetchPrice(listing)
+    const normalized = normalizedLiveEntry(retailer, result, product)
+    if (!normalized) throw new Error('Amazon scraper returned no usable price')
+    return normalized
   }
   if (listing.retailer === 'flipkart') return fetchFlipkartAffiliatePrice(listing, product, retailer)
   if (listing.retailer === 'sennheiser_official') {
@@ -326,7 +336,7 @@ async function evaluateAlerts(product, previous) {
 
 app.get('/api/health', (_req, res) => {
   const liveRetailers = [...new Set([...priceSnapshots.values()].flat().map((item) => item.platform))]
-  res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveRetailers.length ? 'live' : 'live_unavailable', providers: liveProviderStatus, v1: { activeRetailers: V1_ACTIVE_RETAILERS, outOfScopeRetailers: V1_OUT_OF_SCOPE_RETAILERS, refreshMinutes: V1_REFRESH_MINUTES, liveRetailers } })
+  res.json({ status: 'ok', database: mongoStatus, lastSyncAt, dataMode: liveRetailers.length ? 'live' : 'live_unavailable', providers: liveProviderStatus, v1: { activeRetailers: V1_ACTIVE_RETAILERS, outOfScopeRetailers: V1_OUT_OF_SCOPE_RETAILERS, refreshMinutes: V1_REFRESH_MINUTES, amazonRefreshMinutes: AMAZON_REFRESH_MINUTES, liveRetailers } })
 })
 app.get('/api/products', (_req, res) => res.json({ products: catalog.map((product) => ({ ...product, listings: listings.filter((listing) => listing.productId === product.id).map((listing) => ({ ...listingView(listing), statusReason: listingReason(listing) })) })) }))
 app.post('/api/products', async (req, res) => {
@@ -432,7 +442,7 @@ app.post('/api/test-sms', async (req, res) => {
   return res.status(result.status === 'sent' ? 200 : 502).json(result)
 })
 
-cron.schedule(`*/${V1_REFRESH_MINUTES} * * * *`, () => refreshSnapshots().catch((error) => console.error('Price refresh failed:', error)))
+cron.schedule(`0 */${AMAZON_REFRESH_MINUTES / 60} * * *`, () => refreshSnapshots().catch((error) => console.error('Price refresh failed:', error)))
 const persistProduct = async (product) => {
   if (!mongoReady) return
   try {
