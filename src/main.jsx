@@ -26,6 +26,7 @@ import {
   ShoppingBag,
   Sparkles,
   TrendingDown,
+  TrendingUp,
   Truck,
   X,
   Zap,
@@ -81,9 +82,6 @@ function App() {
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
   const [showAlert, setShowAlert] = useState(false)
-  const [showAddProduct, setShowAddProduct] = useState(false)
-  const [newProduct, setNewProduct] = useState({ url: '', targetPrice: '', name: '', brand: '', basePrice: '' })
-  const [addProductMode, setAddProductMode] = useState('preset')
   const [notifications, setNotifications] = useState([])
   const [showNotifications, setShowNotifications] = useState(false)
   const [alertForm, setAlertForm] = useState({ alertType: 'price_drop', condition: '24000', notify: 'in_app', email: '', phone: '' })
@@ -95,37 +93,6 @@ function App() {
   const [activeSection, setActiveSection] = useState('overview')
   const [imageFailed, setImageFailed] = useState(false)
   const [sidebarImageErrors, setSidebarImageErrors] = useState({})
-
-  const POPULAR_PRESETS = [
-    {
-      name: 'Sennheiser Accentum Plus',
-      brand: 'Sennheiser',
-      category: 'Headphones',
-      basePrice: 14990,
-      specs: { 'Noise Cancellation': 'Hybrid ANC', Battery: '50 Hours', Bluetooth: '5.2 with aptX HD' },
-    },
-    {
-      name: 'Sony LinkBuds S WF-LS900N',
-      brand: 'Sony',
-      category: 'Earbuds',
-      basePrice: 12990,
-      specs: { 'Noise Cancellation': 'Active ANC', Battery: '20 Hours', Codec: 'LDAC & DSEE Extreme' },
-    },
-    {
-      name: 'OnePlus Bullets Wireless Z2',
-      brand: 'OnePlus',
-      category: 'Neckband',
-      basePrice: 1999,
-      specs: { Driver: '12.4mm Bass', Battery: '30 Hours', FastCharge: '10 min for 20 hrs' },
-    },
-    {
-      name: 'Marshall Major IV Wireless',
-      brand: 'Marshall',
-      category: 'Headphones',
-      basePrice: 11999,
-      specs: { Battery: '80+ Hours', WirelessCharging: 'Yes', Sound: 'Custom dynamic drivers' },
-    },
-  ]
 
   // Settings & Help Modals
   const [showSettings, setShowSettings] = useState(false)
@@ -224,6 +191,26 @@ function App() {
       setCountdown(intervalMap[settings.refreshInterval] || 30)
     }
   }, [loadData, selectedProductId, selectedColor, range, settings.refreshInterval])
+
+  const triggerDynamicShift = useCallback(async () => {
+    setIsRefreshing(true)
+    try {
+      const res = await fetch(apiUrl('/api/prices/shift'), { method: 'POST' })
+      await res.json()
+      await loadData()
+      if (selectedProductId) {
+        const historyRes = await fetch(apiUrl(`/api/prices/history/${selectedColor}?productId=${selectedProductId}&range=${range}`))
+        const histData = await historyRes.json()
+        setHistory(histData.history || [])
+      }
+      loadNotifications()
+      showToast('⚡ Dynamic market prices shifted!')
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setIsRefreshing(false)
+    }
+  }, [loadData, selectedProductId, selectedColor, range])
 
   // Countdown timer effect for real-time updates
   useEffect(() => {
@@ -429,60 +416,6 @@ function App() {
     } catch {}
   }
 
-  const quickAddPreset = async (preset) => {
-    try {
-      const response = await fetch(apiUrl('/api/products'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(preset),
-      })
-      const data = await response.json()
-      if (!response.ok) return setError(data.error || 'Could not add product')
-      setProducts((current) =>
-        current.some((item) => item.id === data.product.id)
-          ? current.map((item) => (item.id === data.product.id ? data.product : item))
-          : [...current, data.product]
-      )
-      setSelectedProductId(data.product.id)
-      setShowAddProduct(false)
-      showToast(`Tracking ${data.product.name} (Zero API keys required)!`)
-    } catch {
-      setError('Failed to add preset')
-    }
-  }
-
-  const addNewProduct = async (event) => {
-    event.preventDefault()
-    const payload = addProductMode === 'preset'
-      ? {
-          name: newProduct.name?.trim(),
-          brand: newProduct.brand?.trim() || 'Audio',
-          basePrice: Number(newProduct.basePrice) || 19990,
-          url: newProduct.url?.trim(),
-          targetPrice: newProduct.targetPrice,
-        }
-      : {
-          url: newProduct.url?.trim(),
-          targetPrice: newProduct.targetPrice,
-        }
-    const response = await fetch(apiUrl('/api/products'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const data = await response.json()
-    if (!response.ok) return setError(data.error || 'Could not add product')
-    setProducts((current) =>
-      current.some((item) => item.id === data.product.id)
-        ? current.map((item) => (item.id === data.product.id ? data.product : item))
-        : [...current, data.product]
-    )
-    setSelectedProductId(data.product.id)
-    setShowAddProduct(false)
-    setNewProduct({ url: '', targetPrice: '', name: '', brand: '', basePrice: '' })
-    showToast(`Tracking ${data.product.name} (Zero API keys required)!`)
-  }
-
   const triggerTestAlert = async (alertId) => {
     try {
       const response = await fetch(apiUrl(`/api/alerts/${alertId}/test`), { method: 'POST' })
@@ -564,41 +497,44 @@ function App() {
         </nav>
 
         <div className="sidebar-divider" />
-        <div className="workspace-label">TRACKED PRODUCTS</div>
-        <div className="product-list">
-          {products.map((item) => (
-            <button
-              key={item.id}
-              className={`product-link ${selectedProductId === item.id ? 'selected' : ''}`}
-              onClick={() => {
-                setSelectedProductId(item.id)
-                setMobileNav(false)
-              }}
-            >
-              <span className="mini-product">
-                {item.image && !sidebarImageErrors[item.id] ? (
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    onError={() =>
-                      setSidebarImageErrors((prev) => ({ ...prev, [item.id]: true }))
-                    }
-                  />
-                ) : (
-                  <Headphones size={14} />
-                )}
+        <div className="workspace-label">ACTIVE TRACKED PRODUCT</div>
+        <div className="focused-product-box">
+          <div className="focused-product-top">
+            <span className="mini-product">
+              {product?.image && !sidebarImageErrors[product.id] ? (
+                <img
+                  src={product.image}
+                  alt={product.name}
+                  onError={() =>
+                    setSidebarImageErrors((prev) => ({ ...prev, [product.id]: true }))
+                  }
+                />
+              ) : (
+                <Headphones size={14} />
+              )}
+            </span>
+            <div>
+              <b>{product?.name || 'Sennheiser Momentum 4'}</b>
+              <small>{product?.brand || 'Sennheiser'} · ANC Wireless</small>
+            </div>
+          </div>
+          <div className="focused-meta-list">
+            <div className="focused-meta-row">
+              <span>Dynamic Engine</span>
+              <span className="live-status-chip">
+                <span className="live-dot live-pulse" /> Active
               </span>
-              <span>
-                <b>{item.name}</b>
-                <small>{item.brand}</small>
-              </span>
-            </button>
-          ))}
+            </div>
+            <div className="focused-meta-row">
+              <span>Channels</span>
+              <span>6 Monitored</span>
+            </div>
+            <div className="focused-meta-row">
+              <span>Best Price</span>
+              <strong className="green-text">{stats?.min ? money(stats.min) : '₹21,990'}</strong>
+            </div>
+          </div>
         </div>
-
-        <button className="add-product" onClick={() => setShowAddProduct(true)}>
-          <span>+</span> Add product
-        </button>
 
         <div className="sidebar-bottom">
           <div className="sync-card">
@@ -648,7 +584,7 @@ function App() {
           <div className="topbar-actions">
             <div className="realtime-pill">
               <span className="live-dot live-pulse" />
-              <span>Real-Time Sync: {countdown}s</span>
+              <span>Dynamic Sync: {countdown}s</span>
             </div>
             <button
               className="refresh-action-btn"
@@ -658,6 +594,15 @@ function App() {
             >
               <RefreshCw size={14} className={isRefreshing ? 'spinning' : ''} />
               <span>{isRefreshing ? 'Syncing...' : 'Sync Prices'}</span>
+            </button>
+            <button
+              className="shift-action-btn"
+              onClick={triggerDynamicShift}
+              disabled={isRefreshing}
+              title="Simulate dynamic price drop across retailers"
+            >
+              <Zap size={14} />
+              <span>Shift Prices</span>
             </button>
             <button
               className="icon-button notif-bell-btn"
@@ -992,6 +937,7 @@ function App() {
                       {isBest && <span className="best-badge">BEST PRICE</span>}
                       {isOfficial && <span className="offer-badge">MSRP / Official Store</span>}
                       {item.cardOffer && !isOfficial && <span className="offer-badge">Card offer</span>}
+                      {item.dealTag && <span className="offer-badge deal-badge">{item.dealTag}</span>}
                     </span>
                     <span className="price-value">
                       {rowPriceLabel(item)}
@@ -1003,11 +949,16 @@ function App() {
                           : 'Live verified price'}
                       </small>
                     </span>
-                    <span className={item.change < 0 && !isOfficial ? 'green change' : 'change muted'}>
+                    <span className={item.change < 0 && !isOfficial ? 'green change' : item.change > 0 && !isOfficial ? 'change' : 'change muted'}>
                       {item.change < 0 && !isOfficial ? (
                         <>
                           <TrendingDown size={14} />
-                          {Math.abs(item.change)}%
+                          {money(Math.abs(item.change))} ({Math.abs(item.changePercent || 0)}%)
+                        </>
+                      ) : item.change > 0 && !isOfficial ? (
+                        <>
+                          <TrendingUp size={14} />
+                          +{money(item.change)}
                         </>
                       ) : (
                         '—'
@@ -1481,141 +1432,6 @@ function App() {
                   <p style={{ color: '#888' }}>Click "Check Now" to test backend connectivity.</p>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ADD PRODUCT MODAL */}
-      {showAddProduct && (
-        <div className="modal-backdrop" onClick={() => setShowAddProduct(false)}>
-          <div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: '560px' }}>
-            <button className="modal-close" onClick={() => setShowAddProduct(false)}>
-              <X size={18} />
-            </button>
-            <div className="modal-header-row">
-              <span className="modal-icon">
-                <Plus size={20} />
-              </span>
-              <div>
-                <h2>Track a Product</h2>
-                <p>Fully functional with zero API keys required</p>
-              </div>
-            </div>
-
-            <div className="zero-key-banner">
-              <Zap size={15} />
-              <span>
-                <strong>Zero API Keys Needed:</strong> PricePulse uses local scrapers, verified fallback telemetry, and in-memory mock synthesis. No Keepa or Apify keys required.
-              </span>
-            </div>
-
-            <div className="modal-nav-tabs">
-              <button
-                className={`modal-tab-btn ${addProductMode === 'preset' ? 'active' : ''}`}
-                onClick={() => setAddProductMode('preset')}
-              >
-                Popular Presets (1-Click)
-              </button>
-              <button
-                className={`modal-tab-btn ${addProductMode === 'custom' ? 'active' : ''}`}
-                onClick={() => setAddProductMode('custom')}
-              >
-                Custom Product or URL
-              </button>
-            </div>
-
-            {addProductMode === 'preset' ? (
-              <div>
-                <p style={{ fontSize: '12px', color: '#666', marginBottom: '12px' }}>
-                  Select any popular headphone or audio product to instantly track across Amazon, Flipkart, Croma, and Reliance Digital:
-                </p>
-                <div className="preset-grid">
-                  {POPULAR_PRESETS.map((preset) => (
-                    <div
-                      key={preset.name}
-                      className="preset-card"
-                      onClick={() => quickAddPreset(preset)}
-                    >
-                      <b>{preset.name}</b>
-                      <small>{preset.brand} · {preset.category}</small>
-                      <span className="preset-price">From ₹{preset.basePrice.toLocaleString('en-IN')}</span>
-                      <button
-                        type="button"
-                        style={{
-                          marginTop: '6px',
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          borderRadius: '4px',
-                          background: '#e58442',
-                          color: '#fff',
-                          border: 'none',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        + Track Now
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={addNewProduct} className="add-product-form">
-                <label>
-                  Product Name
-                  <input
-                    required
-                    value={newProduct.name || ''}
-                    type="text"
-                    placeholder="e.g. Sony WH-1000XM4 or Apple AirPods Pro"
-                    onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })}
-                  />
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                  <label>
-                    Brand
-                    <input
-                      value={newProduct.brand || ''}
-                      type="text"
-                      placeholder="e.g. Sony, Apple, Bose"
-                      onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Base Market Price (₹)
-                    <input
-                      value={newProduct.basePrice || ''}
-                      type="number"
-                      placeholder="e.g. 24990"
-                      onChange={(event) => setNewProduct({ ...newProduct, basePrice: event.target.value })}
-                    />
-                  </label>
-                </div>
-                <label>
-                  Retailer URL (Optional)
-                  <input
-                    value={newProduct.url || ''}
-                    type="text"
-                    placeholder="https://www.amazon.in/... or any URL"
-                    onChange={(event) => setNewProduct({ ...newProduct, url: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Target Alert Price (₹, Optional)
-                  <input
-                    value={newProduct.targetPrice || ''}
-                    type="number"
-                    min="1"
-                    placeholder="₹"
-                    onChange={(event) =>
-                      setNewProduct({ ...newProduct, targetPrice: event.target.value })
-                    }
-                  />
-                </label>
-                <button type="submit" className="save-alert">
-                  Track Product Now
-                </button>
-              </form>
             )}
           </div>
         </div>

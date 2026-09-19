@@ -602,3 +602,89 @@ footer a { color: #898b84; text-decoration: underline; }
   color: #8c938f;
   font-size: 12px;
 }
+
+/* Focused Single-Product Sidebar Card */
+.focused-product-box {
+  background: #f7f7f3;
+  border: 1px solid #e7e7df;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.focused-product-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.focused-product-top b {
+  display: block;
+  font-size: 12px;
+  color: #212529;
+  line-height: 1.2;
+}
+.focused-product-top small {
+  font-size: 10px;
+  color: #7b8388;
+}
+.focused-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #ffffff;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #ededeb;
+}
+.focused-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #636b6f;
+}
+.focused-meta-row strong.green-text {
+  color: #1e7e34;
+  font-weight: 700;
+}
+.live-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #2b6a3f;
+  background: #eaf7ed;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+/* Dynamic Shift Button */
+.shift-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff8eb;
+  border: 1px solid #f6d8a3;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.shift-action-btn:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+
+/* Deal Badge */
+.offer-badge.deal-badge {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-weight: 600;
+}
+
