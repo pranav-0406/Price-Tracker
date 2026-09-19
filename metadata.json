@@ -1,0 +1,6 @@
+{
+  "name": "PricePulse Tracker",
+  "description": "Real-time e-commerce price tracker comparing prices across major retailers like Amazon, Flipkart, and Croma",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

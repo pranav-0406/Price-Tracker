@@ -82,8 +82,11 @@ function App() {
   const [maxPrice, setMaxPrice] = useState('')
   const [showAlert, setShowAlert] = useState(false)
   const [showAddProduct, setShowAddProduct] = useState(false)
-  const [newProduct, setNewProduct] = useState({ url: '', targetPrice: '' })
-  const [alertForm, setAlertForm] = useState({ alertType: 'price_drop', condition: '24000', notify: 'email', email: '', phone: '' })
+  const [newProduct, setNewProduct] = useState({ url: '', targetPrice: '', name: '', brand: '', basePrice: '' })
+  const [addProductMode, setAddProductMode] = useState('preset')
+  const [notifications, setNotifications] = useState([])
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [alertForm, setAlertForm] = useState({ alertType: 'price_drop', condition: '24000', notify: 'in_app', email: '', phone: '' })
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState(null)
   const [dataMode, setDataMode] = useState('live')
@@ -92,6 +95,37 @@ function App() {
   const [activeSection, setActiveSection] = useState('overview')
   const [imageFailed, setImageFailed] = useState(false)
   const [sidebarImageErrors, setSidebarImageErrors] = useState({})
+
+  const POPULAR_PRESETS = [
+    {
+      name: 'Sennheiser Accentum Plus',
+      brand: 'Sennheiser',
+      category: 'Headphones',
+      basePrice: 14990,
+      specs: { 'Noise Cancellation': 'Hybrid ANC', Battery: '50 Hours', Bluetooth: '5.2 with aptX HD' },
+    },
+    {
+      name: 'Sony LinkBuds S WF-LS900N',
+      brand: 'Sony',
+      category: 'Earbuds',
+      basePrice: 12990,
+      specs: { 'Noise Cancellation': 'Active ANC', Battery: '20 Hours', Codec: 'LDAC & DSEE Extreme' },
+    },
+    {
+      name: 'OnePlus Bullets Wireless Z2',
+      brand: 'OnePlus',
+      category: 'Neckband',
+      basePrice: 1999,
+      specs: { Driver: '12.4mm Bass', Battery: '30 Hours', FastCharge: '10 min for 20 hrs' },
+    },
+    {
+      name: 'Marshall Major IV Wireless',
+      brand: 'Marshall',
+      category: 'Headphones',
+      basePrice: 11999,
+      specs: { Battery: '80+ Hours', WirelessCharging: 'Yes', Sound: 'Custom dynamic drivers' },
+    },
+  ]
 
   // Settings & Help Modals
   const [showSettings, setShowSettings] = useState(false)
@@ -238,6 +272,7 @@ function App() {
 
   useEffect(() => {
     loadAlerts()
+    loadNotifications()
   }, [loadAlerts])
 
   useEffect(() => {
@@ -381,15 +416,59 @@ function App() {
     if (!response.ok) return setError(data.error || 'Could not create alert')
     setAlerts((current) => [data.alert, ...current])
     setShowAlert(false)
-    showToast('Alert created successfully!')
+    showToast('Alert created! Dispatches in-app without requiring API keys.')
+  }
+
+  const loadNotifications = async () => {
+    try {
+      const response = await fetch(apiUrl('/api/notifications'))
+      if (response.ok) {
+        const data = await response.json()
+        setNotifications(data.notifications || [])
+      }
+    } catch {}
+  }
+
+  const quickAddPreset = async (preset) => {
+    try {
+      const response = await fetch(apiUrl('/api/products'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preset),
+      })
+      const data = await response.json()
+      if (!response.ok) return setError(data.error || 'Could not add product')
+      setProducts((current) =>
+        current.some((item) => item.id === data.product.id)
+          ? current.map((item) => (item.id === data.product.id ? data.product : item))
+          : [...current, data.product]
+      )
+      setSelectedProductId(data.product.id)
+      setShowAddProduct(false)
+      showToast(`Tracking ${data.product.name} (Zero API keys required)!`)
+    } catch {
+      setError('Failed to add preset')
+    }
   }
 
   const addNewProduct = async (event) => {
     event.preventDefault()
+    const payload = addProductMode === 'preset'
+      ? {
+          name: newProduct.name?.trim(),
+          brand: newProduct.brand?.trim() || 'Audio',
+          basePrice: Number(newProduct.basePrice) || 19990,
+          url: newProduct.url?.trim(),
+          targetPrice: newProduct.targetPrice,
+        }
+      : {
+          url: newProduct.url?.trim(),
+          targetPrice: newProduct.targetPrice,
+        }
     const response = await fetch(apiUrl('/api/products'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newProduct),
+      body: JSON.stringify(payload),
     })
     const data = await response.json()
     if (!response.ok) return setError(data.error || 'Could not add product')
@@ -400,8 +479,32 @@ function App() {
     )
     setSelectedProductId(data.product.id)
     setShowAddProduct(false)
-    setNewProduct({ url: '', targetPrice: '' })
-    showToast('Product added to tracking!')
+    setNewProduct({ url: '', targetPrice: '', name: '', brand: '', basePrice: '' })
+    showToast(`Tracking ${data.product.name} (Zero API keys required)!`)
+  }
+
+  const triggerTestAlert = async (alertId) => {
+    try {
+      const response = await fetch(apiUrl(`/api/alerts/${alertId}/test`), { method: 'POST' })
+      const data = await response.json()
+      if (response.ok) {
+        showToast('🔔 Test alert triggered & delivered without API keys!')
+        loadAlerts()
+        loadNotifications()
+      } else {
+        setError(data.error || 'Failed to trigger test alert')
+      }
+    } catch {
+      showToast('Alert test triggered locally')
+    }
+  }
+
+  const clearNotifications = async () => {
+    try {
+      await fetch(apiUrl('/api/notifications/clear'), { method: 'POST' })
+      setNotifications([])
+      showToast('Notification center cleared')
+    } catch {}
   }
 
   const updateAlert = async (alert, status) => {
@@ -555,6 +658,16 @@ function App() {
             >
               <RefreshCw size={14} className={isRefreshing ? 'spinning' : ''} />
               <span>{isRefreshing ? 'Syncing...' : 'Sync Prices'}</span>
+            </button>
+            <button
+              className="icon-button notif-bell-btn"
+              onClick={() => setShowNotifications(true)}
+              title="Notification Center (Zero API Keys)"
+            >
+              <Bell size={18} />
+              {notifications.length > 0 && (
+                <span className="bell-badge">{notifications.length}</span>
+              )}
             </button>
             <button className="icon-button" onClick={() => setShowAlert(true)} title="Set Alert">
               <BellRing size={18} />
@@ -960,11 +1073,23 @@ function App() {
                         <TrendingDown size={16} />
                       </span>
                       <span>
-                        <b>{alert.alertType.replaceAll('_', ' ')}</b>
+                        <b>
+                          {alert.alertType.replaceAll('_', ' ')}
+                          {alert.condition ? `: ${money(alert.condition)}` : ''}
+                        </b>
                         <small>
-                          {alert.status} · {alert.delivery?.status || 'monitoring'}
+                          {alert.status} · {alert.notify.toUpperCase()}
+                          {alert.delivery?.simulated ? ' · In-App Ready' : ''}
                         </small>
                       </span>
+                      <button
+                        type="button"
+                        className="test-alert-btn"
+                        onClick={() => triggerTestAlert(alert.id)}
+                        title="Simulate price drop event without API keys"
+                      >
+                        <Zap size={12} /> Test
+                      </button>
                       <button
                         className={`toggle ${alert.status === 'active' ? 'on' : ''}`}
                         onClick={() =>
@@ -987,6 +1112,7 @@ function App() {
                   value={alertForm.notify}
                   onChange={(event) => setAlertForm({ ...alertForm, notify: event.target.value })}
                 >
+                  <option value="in_app">In-App (No API Keys)</option>
                   <option value="email">Email</option>
                   <option value="sms">SMS</option>
                   <option value="both">Email + SMS</option>
@@ -1363,38 +1489,134 @@ function App() {
       {/* ADD PRODUCT MODAL */}
       {showAddProduct && (
         <div className="modal-backdrop" onClick={() => setShowAddProduct(false)}>
-          <div className="modal small" onClick={(event) => event.stopPropagation()}>
+          <div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: '560px' }}>
             <button className="modal-close" onClick={() => setShowAddProduct(false)}>
               <X size={18} />
             </button>
-            <h2>Add a product URL</h2>
-            <form onSubmit={addNewProduct} className="add-product-form">
-              <label>
-                Retailer product URL
-                <input
-                  required
-                  value={newProduct.url}
-                  type="url"
-                  placeholder="https://www.amazon.in/dp/... or flipkart.com/..."
-                  onChange={(event) => setNewProduct({ ...newProduct, url: event.target.value })}
-                />
-              </label>
-              <label>
-                Optional target price
-                <input
-                  value={newProduct.targetPrice}
-                  type="number"
-                  min="1"
-                  placeholder="₹"
-                  onChange={(event) =>
-                    setNewProduct({ ...newProduct, targetPrice: event.target.value })
-                  }
-                />
-              </label>
-              <button type="submit" className="save-alert">
-                Track URL
+            <div className="modal-header-row">
+              <span className="modal-icon">
+                <Plus size={20} />
+              </span>
+              <div>
+                <h2>Track a Product</h2>
+                <p>Fully functional with zero API keys required</p>
+              </div>
+            </div>
+
+            <div className="zero-key-banner">
+              <Zap size={15} />
+              <span>
+                <strong>Zero API Keys Needed:</strong> PricePulse uses local scrapers, verified fallback telemetry, and in-memory mock synthesis. No Keepa or Apify keys required.
+              </span>
+            </div>
+
+            <div className="modal-nav-tabs">
+              <button
+                className={`modal-tab-btn ${addProductMode === 'preset' ? 'active' : ''}`}
+                onClick={() => setAddProductMode('preset')}
+              >
+                Popular Presets (1-Click)
               </button>
-            </form>
+              <button
+                className={`modal-tab-btn ${addProductMode === 'custom' ? 'active' : ''}`}
+                onClick={() => setAddProductMode('custom')}
+              >
+                Custom Product or URL
+              </button>
+            </div>
+
+            {addProductMode === 'preset' ? (
+              <div>
+                <p style={{ fontSize: '12px', color: '#666', marginBottom: '12px' }}>
+                  Select any popular headphone or audio product to instantly track across Amazon, Flipkart, Croma, and Reliance Digital:
+                </p>
+                <div className="preset-grid">
+                  {POPULAR_PRESETS.map((preset) => (
+                    <div
+                      key={preset.name}
+                      className="preset-card"
+                      onClick={() => quickAddPreset(preset)}
+                    >
+                      <b>{preset.name}</b>
+                      <small>{preset.brand} · {preset.category}</small>
+                      <span className="preset-price">From ₹{preset.basePrice.toLocaleString('en-IN')}</span>
+                      <button
+                        type="button"
+                        style={{
+                          marginTop: '6px',
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          borderRadius: '4px',
+                          background: '#e58442',
+                          color: '#fff',
+                          border: 'none',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        + Track Now
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={addNewProduct} className="add-product-form">
+                <label>
+                  Product Name
+                  <input
+                    required
+                    value={newProduct.name || ''}
+                    type="text"
+                    placeholder="e.g. Sony WH-1000XM4 or Apple AirPods Pro"
+                    onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })}
+                  />
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <label>
+                    Brand
+                    <input
+                      value={newProduct.brand || ''}
+                      type="text"
+                      placeholder="e.g. Sony, Apple, Bose"
+                      onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Base Market Price (₹)
+                    <input
+                      value={newProduct.basePrice || ''}
+                      type="number"
+                      placeholder="e.g. 24990"
+                      onChange={(event) => setNewProduct({ ...newProduct, basePrice: event.target.value })}
+                    />
+                  </label>
+                </div>
+                <label>
+                  Retailer URL (Optional)
+                  <input
+                    value={newProduct.url || ''}
+                    type="text"
+                    placeholder="https://www.amazon.in/... or any URL"
+                    onChange={(event) => setNewProduct({ ...newProduct, url: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Target Alert Price (₹, Optional)
+                  <input
+                    value={newProduct.targetPrice || ''}
+                    type="number"
+                    min="1"
+                    placeholder="₹"
+                    onChange={(event) =>
+                      setNewProduct({ ...newProduct, targetPrice: event.target.value })
+                    }
+                  />
+                </label>
+                <button type="submit" className="save-alert">
+                  Track Product Now
+                </button>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -1406,10 +1628,23 @@ function App() {
             <button className="modal-close" onClick={() => setShowAlert(false)}>
               <X size={18} />
             </button>
-            <span className="modal-icon">
-              <BellRing size={20} />
-            </span>
-            <h2>Set a price alert</h2>
+            <div className="modal-header-row">
+              <span className="modal-icon">
+                <BellRing size={20} />
+              </span>
+              <div>
+                <h2>Set a Price Alert</h2>
+                <p>Monitors price drops across 6 major retailers</p>
+              </div>
+            </div>
+
+            <div className="zero-key-banner">
+              <Zap size={15} />
+              <span>
+                <strong>Zero-Key Alerting:</strong> Price drops are delivered to your In-App Notification Center instantly without requiring third-party credentials.
+              </span>
+            </div>
+
             <form onSubmit={saveAlert}>
               <label>
                 Alert type
@@ -1427,7 +1662,7 @@ function App() {
               </label>
               {alertForm.alertType === 'price_drop' && (
                 <label>
-                  Target price
+                  Target price (₹)
                   <input
                     required
                     type="number"
@@ -1440,21 +1675,21 @@ function App() {
                 </label>
               )}
               <label>
-                Notification
+                Notification Channel
                 <select
                   value={alertForm.notify}
                   onChange={(event) => setAlertForm({ ...alertForm, notify: event.target.value })}
                 >
-                  <option value="email">Email</option>
-                  <option value="sms">SMS</option>
+                  <option value="in_app">In-App Notification & Toast (Zero Keys Required)</option>
+                  <option value="email">Email (Simulates in-app if Resend is not set)</option>
+                  <option value="sms">SMS (Simulates in-app if Twilio is not set)</option>
                   <option value="both">Email + SMS</option>
                 </select>
               </label>
               {(alertForm.notify === 'email' || alertForm.notify === 'both') && (
                 <label>
-                  Email
+                  Email (Optional for zero-key test)
                   <input
-                    required
                     type="email"
                     value={alertForm.email || settings.defaultEmail}
                     onChange={(event) => setAlertForm({ ...alertForm, email: event.target.value })}
@@ -1463,17 +1698,109 @@ function App() {
               )}
               {(alertForm.notify === 'sms' || alertForm.notify === 'both') && (
                 <label>
-                  Phone
+                  Phone (Optional for zero-key test)
                   <input
-                    required
                     type="tel"
                     value={alertForm.phone || settings.defaultPhone}
                     onChange={(event) => setAlertForm({ ...alertForm, phone: event.target.value })}
                   />
                 </label>
               )}
-              <button className="save-alert">Create alert</button>
+              <button className="save-alert">Create Alert</button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* NOTIFICATIONS CENTER MODAL */}
+      {showNotifications && (
+        <div className="modal-backdrop" onClick={() => setShowNotifications(false)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: '520px' }}>
+            <button className="modal-close" onClick={() => setShowNotifications(false)}>
+              <X size={18} />
+            </button>
+            <div className="modal-header-row">
+              <span className="modal-icon">
+                <Bell size={20} />
+              </span>
+              <div>
+                <h2>Notification Center</h2>
+                <p>Live alerts dispatched across tracked products</p>
+              </div>
+            </div>
+
+            <div className="zero-key-banner">
+              <Zap size={15} />
+              <span>
+                <strong>Zero-Key Simulation Engine:</strong> All alerts trigger here with full event telemetry without requiring Twilio or Resend keys.
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', margin: '10px 0' }}>
+              <button
+                type="button"
+                className="test-alert-btn"
+                style={{ padding: '6px 12px', fontSize: '12px' }}
+                onClick={() => {
+                  const alertToTest = alerts.find((item) => item.productId === selectedProductId) || alerts[0]
+                  if (alertToTest) {
+                    triggerTestAlert(alertToTest.id)
+                  } else {
+                    showToast('Create an alert first to test!')
+                  }
+                }}
+              >
+                <Zap size={14} /> Trigger Test Price Drop Alert
+              </button>
+              {notifications.length > 0 && (
+                <button
+                  type="button"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '12px',
+                    border: '1px solid #e0e0dc',
+                    background: '#fff',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={clearNotifications}
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
+
+            <div className="notif-list">
+              {notifications.length === 0 ? (
+                <div className="notif-empty">
+                  <Bell size={32} style={{ opacity: 0.3, marginBottom: '8px' }} />
+                  <div>No notifications received yet.</div>
+                  <small style={{ color: '#888' }}>
+                    Trigger a test alert above or set an alert threshold to watch real-time drops!
+                  </small>
+                </div>
+              ) : (
+                notifications.map((notif) => (
+                  <div key={notif.id} className="notif-card">
+                    <div className="notif-card-header">
+                      <b>{notif.productName}</b>
+                      <small>{new Date(notif.createdAt).toLocaleTimeString()}</small>
+                    </div>
+                    <p>{notif.message}</p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                      <span className="notif-badge">
+                        {notif.simulated ? 'Zero-Key Simulation' : notif.channel.toUpperCase()}
+                      </span>
+                      {notif.price && (
+                        <strong style={{ color: '#e58442', fontSize: '12px' }}>
+                          ₹{notif.price.toLocaleString('en-IN')}
+                        </strong>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

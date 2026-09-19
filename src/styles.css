@@ -455,3 +455,150 @@ footer a { color: #898b84; text-decoration: underline; }
   animation: slideUp 0.3s ease;
 }
 @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Bell badge */
+.notif-bell-btn {
+  position: relative;
+}
+.bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #e58442;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+/* Test alert button in row */
+.test-alert-btn {
+  background: #fff0e3;
+  color: #e58442;
+  border: 1px solid #f9d5be;
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+.test-alert-btn:hover {
+  background: #e58442;
+  color: #ffffff;
+}
+
+/* Preset product grid */
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.preset-card {
+  border: 1px solid #e9ebe6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #fafaf8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+.preset-card:hover {
+  border-color: #e58442;
+  background: #fffdfb;
+}
+.preset-card b {
+  font-size: 12px;
+  color: #30373b;
+}
+.preset-card small {
+  font-size: 11px;
+  color: #79807b;
+}
+.preset-card .preset-price {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e58442;
+  margin-top: 4px;
+}
+
+/* Zero key notice banner */
+.zero-key-banner {
+  background: #f1f7f2;
+  border: 1px solid #c7e5cf;
+  color: #2b6a3f;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+
+/* Notification popover */
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+.notif-card {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #efefe8;
+  background: #fcfcfb;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.notif-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.notif-card-header b {
+  font-size: 12px;
+  color: #2b3135;
+}
+.notif-card-header small {
+  font-size: 10px;
+  color: #8c938f;
+}
+.notif-card p {
+  font-size: 11px;
+  color: #555b57;
+  margin: 0;
+  line-height: 1.4;
+}
+.notif-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #eaf7ed;
+  color: #2b6a3f;
+  font-weight: 600;
+}
+.notif-empty {
+  text-align: center;
+  padding: 24px 12px;
+  color: #8c938f;
+  font-size: 12px;
+}
